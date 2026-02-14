@@ -242,6 +242,7 @@ Consider chat history and past context for accurate interpretation.
 
 | Function | Signature | Behavior |
 |---|---|---|
+| `analyze_message` | `(recent_history: str, long_term_context: str, target_message: str) -> dict` | **Unified analysis.** Makes a SINGLE Gemini call that returns ALL data needed across every feature. Returns a parsed dict (see schema below). The inline handler calls this once and then picks the relevant fields based on what the user asked for. On exception or JSON parse failure, return a fallback dict with `is_english: True`. |
 | `explain_message` | `(recent_history: str, long_term_context: str, target_message: str) -> str` | Explain the target message. See prompt template below. Return `response.text`. On exception: `"⚠️ Couldn't process that. Try again!"`. |
 | `explain_with_translate` | `(recent_history: str, long_term_context: str, target_message: str, target_language: str) -> str` | Explain the target message (translation + vibe check + slang glossary + detected tone) but deliver the **entire explanation in `target_language`**. See prompt template below. Return `response.text`. On exception: `"⚠️ Couldn't process that. Try again!"`. |
 | `generate_reply` | `(recent_history: str, long_term_context: str, target_message: str, tone: str, language: str) -> str` | Generate a suggested reply to the target message with the specified tone in the specified language. See prompt template below. If a tone and language is not mentioned, take the predominant language and tone from the conversation. Return `response.text`. On exception: `"⚠️ Couldn't generate a reply. Try again!"`. |
@@ -249,7 +250,83 @@ Consider chat history and past context for accurate interpretation.
 | `summarize_conversation` | `(messages_text: str) -> dict` | Summarize a batch of messages. Return a dict with keys `summary` (str), `key_terms` (list[str]), `participants` (list[str]). Parse the JSON from Gemini's response. On exception, return a fallback dict. |
 | `detect_tone` | `(recent_history: str, target_message: str) -> str` | Detect the tone/mood of the target message in context. Return a one-word or short-phrase tone like "casual", "sarcastic", "formal", "angry", "playful", etc. On exception, return `"casual"`. |
 
+> **Design note:** `analyze_message` is the preferred entry point for inline queries because it avoids multiple sequential Gemini calls. The individual functions (`explain_message`, `generate_reply`, etc.) still exist for cases where only one specific capability is needed (e.g., `/setlang` or `/settone` slash commands, `summarize_conversation` for background summarization).
+
 4. **Prompt templates:**
+
+**`analyze_message` prompt:**
+
+```
+{long_term_context}
+
+[RECENT CHAT HISTORY]
+{recent_history}
+
+[TARGET MESSAGE]
+{target_message}
+
+TASK: Perform a comprehensive analysis of the target message. Return a JSON object (no markdown fencing) with this exact schema:
+{{
+  "is_english": <true if the message is plain standard English with no slang or code-mixing, false otherwise>,
+  "detected_language": "<primary language or mix, e.g. 'Kanglish', 'Hinglish', 'Hindi', 'Kannada', 'English'>",
+  "translation": "<literal English translation of the message, or the original text if already English>",
+  "vibe": "<cultural context — is it sarcasm? affection? frustration? humor? Explain in 1-2 sentences>",
+  "tone": "<single word: casual, sarcastic, formal, angry, playful, affectionate, frustrated, humorous, urgent, etc.>",
+  "slang": {{
+    "<term1>": "<definition>",
+    "<term2>": "<definition>"
+  }},
+  "translations": {{
+    "english": "<full message translated to English>",
+    "hindi": "<full message translated to Hindi>",
+    "kannada": "<full message translated to Kannada>"
+  }},
+  "suggested_replies": {{
+    "matching_tone": {{"text": "<reply matching detected tone>", "tone": "<the detected tone>", "language": "<same language mix as original>"}},
+    "casual": {{"text": "<casual reply>", "language": "english"}},
+    "formal": {{"text": "<formal reply>", "language": "english"}}
+  }}
+}}
+
+Rules:
+- "slang" should only contain non-English or code-mixed terms. Empty object {{}} if none.
+- "suggested_replies.matching_tone" should mirror the language style of the original message.
+- Keep all replies short and natural (1-2 sentences).
+- If is_english is true, still fill in all fields (translation = original, slang = {{}}, etc.).
+```
+
+**`analyze_message` return dict schema:**
+
+```python
+{
+    "is_english": bool,           # True if plain English, no code-mixing
+    "detected_language": str,     # e.g. "Kanglish", "Hinglish", "English"
+    "translation": str,           # English translation
+    "vibe": str,                  # Cultural context explanation
+    "tone": str,                  # Single-word tone
+    "slang": dict[str, str],      # {term: definition}
+    "translations": {             # Pre-computed translations
+        "english": str,
+        "hindi": str,
+        "kannada": str
+    },
+    "suggested_replies": {        # Pre-generated replies
+        "matching_tone": {"text": str, "tone": str, "language": str},
+        "casual": {"text": str, "language": str},
+        "formal": {"text": str, "language": str}
+    }
+}
+```
+
+**How `main.py` uses `analyze_message`:** In the inline handler, call `analyze_message` once. Then based on the user's command:
+- **explain** → format `translation`, `vibe`, `tone`, `slang` into the explanation output.
+- **explaintranslate <lang>** → use `translations[lang]` for the translated explanation + `tone` + `vibe` + `slang`.
+- **reply** / **reply <tone>** → pick from `suggested_replies` (use `matching_tone` if no tone specified, or `casual`/`formal` if specified, or call `generate_reply` for other tones not pre-computed).
+- **translate <lang>** → use `translations[lang]`.
+
+This means most inline queries need only **one** Gemini API call instead of multiple.
+
+---
 
 **`explain_message` prompt:**
 
@@ -353,8 +430,10 @@ Examples: casual, sarcastic, formal, angry, playful, affectionate, frustrated, h
 
 5. **Important implementation details:**
    - Pass `SYSTEM_PROMPT` via the `system_instruction` parameter of `GenerativeModel(...)`, NOT inside user prompts.
+   - For `analyze_message`: use `json.loads()` to parse Gemini's response. Strip any markdown code fences (` ```json ... ``` `) before parsing. If parsing fails, return `{"is_english": True, "detected_language": "English", "translation": target_message, "vibe": "", "tone": "casual", "slang": {}, "translations": {"english": target_message, "hindi": "", "kannada": ""}, "suggested_replies": {"matching_tone": {"text": "", "tone": "casual", "language": "english"}, "casual": {"text": "", "language": "english"}, "formal": {"text": "", "language": "english"}}}`.
    - For `summarize_conversation`, use `json.loads()` to parse Gemini's response. If parsing fails, return `{"summary": response.text[:200], "key_terms": [], "participants": []}`.
    - For `detect_tone`, strip whitespace and lowercase the response.
+   - **Helper function `_clean_json_response(text: str) -> str`:** Strip leading/trailing whitespace, remove ` ```json ` and ` ``` ` fencing if present. Use this in both `analyze_message` and `summarize_conversation` before calling `json.loads()`.
 
 ---
 
