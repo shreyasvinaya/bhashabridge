@@ -232,17 +232,19 @@ def analyze_conversation(
         prompt = f"""[CONVERSATION]
 {conversation_text}
 
-TASK: Summarize the above conversation in exactly 2 short sentences in {language}.
-- Capture the key topic being discussed and the overall sentiment/mood.
-- If any slang or code-mixed terms are important to understanding, briefly clarify them inline.
-- Output ONLY the 2-sentence summary, nothing else."""
+TASK: Summarize the above conversation in exactly 2 well-written, detailed sentences in {language}.
+- The first sentence should capture WHO is talking and WHAT they are discussing — include specific topics, decisions, or events mentioned.
+- The second sentence should convey the VIBE and MOOD of the conversation — are people excited, frustrated, joking around, making plans, arguing, being supportive? Paint a picture of the energy.
+- If any slang or code-mixed terms (like Hinglish, Kanglish, etc.) are key to understanding the conversation, naturally weave their meaning into the sentences.
+- Each sentence should be rich and complete (15-30 words each), not telegraphic.
+- Output ONLY the 2 sentences, nothing else."""
 
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
-                max_output_tokens=200,
+                max_output_tokens=300,
             ),
         )
         return response.text.strip()
