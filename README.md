@@ -2,22 +2,24 @@
 
 > **Tagline:** Don't just translate words. Understand the vibe.
 > **Event:** Gemini 3 Bengaluru Hackathon
-> **Goal:** Build a context-aware Telegram bot that explains Indian code-mixed language (Hinglish, Kanglish, Tanglish, etc.) to English speakers using Gemini.
+> **Goal:** Build a context-aware Telegram bot (inline mode) that explains Indian code-mixed language (Hinglish, Kanglish, etc.) to English speakers using Gemini, with smart auto-reply generation, tone detection, and multi-language translation.
 
 ---
 
 ## 0. Prerequisites (Human Setup — Do Before Running Claude Code)
 
 1. Create a Telegram bot via [@BotFather](https://t.me/BotFather). Note the **bot token**.
-2. Get a **Gemini API key** from [Google AI Studio](https://aistudio.google.com/apikey).
-3. Create a `.env` file at the project root with:
+2. **Enable inline mode** for the bot: send `/setinline` to @BotFather, select your bot, and set a placeholder like `Type to explain, translate, or reply…`.
+3. **Disable group privacy mode**: send `/setprivacy` to @BotFather → select your bot → **Disable**. (Required so the bot can read all group messages for context.)
+4. Get a **Gemini API key** from [Google AI Studio](https://aistudio.google.com/apikey).
+5. Create a `.env` file at the project root:
 
 ```env
 TELEGRAM_TOKEN=<your-telegram-bot-token>
 GEMINI_API_KEY=<your-gemini-api-key>
 ```
 
-4. Ensure Python ≥ 3.10 is installed.
+6. Ensure Python ≥ 3.10 is installed.
 
 ---
 
@@ -32,8 +34,12 @@ bhashabridge/
 ├── requirements.txt
 ├── main.py               # Telegram bot entry point & handler routing
 ├── ai_engine.py          # Gemini integration & prompt logic
-├── memory.py             # Per-chat sliding-window message history
-└── README.md             # This file
+├── memory.py             # Short-term sliding window (in-memory)
+├── long_memory.py        # Long-term persistent memory (JSON files)
+├── memory_retriever.py   # Intelligent retrieval — selects relevant memories
+└── data/                 # Auto-created directory for persistent storage
+    ├── chats/            # Per-chat long-term memory JSON files
+    └── users/            # Per-user preferences JSON files
 ```
 
 ---
@@ -48,14 +54,13 @@ Execute each step in order. Do not skip ahead.
 
 **File:** `.gitignore`
 
-Contents:
-
 ```
 .env
 __pycache__/
 *.pyc
 venv/
 .venv/
+data/
 ```
 
 ---
@@ -68,7 +73,6 @@ venv/
 python-telegram-bot>=20.7,<21
 google-generativeai>=0.8.0
 python-dotenv>=1.0.0
-Pillow>=10.0.0
 ```
 
 Then run:
@@ -79,160 +83,449 @@ pip install -r requirements.txt
 
 ---
 
-### Step 3: Implement `memory.py` — Sliding Window Chat History
+### Step 3: Implement `memory.py` — Short-Term Sliding Window
 
 **File:** `memory.py`
 
-**Purpose:** Store the last N messages per chat in-memory so the AI has conversational context.
+**Purpose:** Store the last N messages per chat in-memory for immediate context.
 
 **Specification:**
 
-- Use a module-level `dict[int, deque]` called `chat_store`.
-- `deque` max length: **15** messages.
-- Each stored entry format: `"FirstName: message text"`.
+- Module-level `dict[int, deque]` called `chat_store`.
+- `deque` max length: **20** messages.
+- Each stored entry is a `dict` with keys: `user` (str), `text` (str), `timestamp` (ISO 8601 str), `message_id` (int).
 
 **Required functions:**
 
 | Function | Signature | Behavior |
 |---|---|---|
-| `add_message` | `(chat_id: int, user: str, text: str) -> None` | Append `"{user}: {text}"` to the chat's deque. Create the deque if it doesn't exist yet. |
-| `get_history` | `(chat_id: int) -> str` | Return all messages in the deque joined by `"\n"`. Return empty string `""` if `chat_id` has no history. |
-| `clear_history` | `(chat_id: int) -> None` | Delete the chat's deque entry from `chat_store` if it exists. Silently do nothing if it doesn't. |
-
-**Edge cases to handle:**
-- `chat_id` not yet in `chat_store` → `get_history` returns `""`, `clear_history` is a no-op.
-- Empty `text` → still store it (the user may have sent whitespace).
+| `add_message` | `(chat_id: int, user: str, text: str, message_id: int) -> None` | Append a dict `{"user": user, "text": text, "timestamp": <current UTC ISO string>, "message_id": message_id}` to the chat's deque. Create deque if not exists. |
+| `get_recent_messages` | `(chat_id: int, n: int = 10) -> list[dict]` | Return the last `n` messages as a list of dicts. Return `[]` if no history. |
+| `get_history_text` | `(chat_id: int, n: int = 10) -> str` | Return formatted string of last `n` messages: each line `"{user}: {text}"`. Return `""` if empty. |
+| `clear_history` | `(chat_id: int) -> None` | Delete the chat's deque if it exists. No-op otherwise. |
 
 ---
 
-### Step 4: Implement `ai_engine.py` — Gemini Integration
+### Step 4: Implement `long_memory.py` — Persistent Long-Term Memory
+
+**File:** `long_memory.py`
+
+**Purpose:** Persist conversation summaries and notable messages to JSON files so context survives bot restarts.
+
+**Storage format:**
+
+- Directory: `data/chats/` — one JSON file per chat: `{chat_id}.json`
+- Directory: `data/users/` — one JSON file per user: `{user_id}.json`
+
+**Chat memory JSON schema** (`data/chats/{chat_id}.json`):
+
+```json
+{
+  "chat_id": 123456,
+  "summaries": [
+    {
+      "timestamp": "2026-02-14T10:00:00Z",
+      "summary": "Group discussed weekend plans. Lots of Kanglish slang used.",
+      "key_terms": ["macha", "scene", "ayyo"],
+      "participants": ["Shreyas", "Rahul"]
+    }
+  ],
+  "notable_messages": [
+    {
+      "timestamp": "2026-02-14T10:05:00Z",
+      "user": "Rahul",
+      "text": "Ayyo, don't put scene da",
+      "explanation": "Don't create drama/excuses",
+      "language_mix": "Kanglish"
+    }
+  ]
+}
+```
+
+**User preferences JSON schema** (`data/users/{user_id}.json`):
+
+```json
+{
+  "user_id": 789,
+  "preferred_language": "english",
+  "preferred_tone": null,
+  "interaction_count": 5,
+  "last_used": "2026-02-14T10:00:00Z"
+}
+```
+
+**Required functions:**
+
+| Function | Signature | Behavior |
+|---|---|---|
+| `_ensure_dirs` | `() -> None` | Create `data/chats/` and `data/users/` directories if they don't exist. Call at module load. |
+| `load_chat_memory` | `(chat_id: int) -> dict` | Load and return the chat's JSON file. Return a default empty structure if file doesn't exist. |
+| `save_chat_memory` | `(chat_id: int, data: dict) -> None` | Write the dict to the chat's JSON file (pretty-printed, `indent=2`). |
+| `add_summary` | `(chat_id: int, summary: str, key_terms: list[str], participants: list[str]) -> None` | Append a summary entry to the chat's `summaries` list. Keep max **50** summaries (drop oldest). Save. |
+| `add_notable_message` | `(chat_id: int, user: str, text: str, explanation: str, language_mix: str) -> None` | Append to `notable_messages`. Keep max **100** entries (drop oldest). Save. |
+| `load_user_prefs` | `(user_id: int) -> dict` | Load user prefs JSON. Return default `{"user_id": user_id, "preferred_language": "english", "preferred_tone": null, "interaction_count": 0, "last_used": null}` if not exists. |
+| `save_user_prefs` | `(user_id: int, prefs: dict) -> None` | Write user prefs to JSON file. |
+| `update_user_prefs` | `(user_id: int, language: str \| None = None, tone: str \| None = None) -> dict` | Load prefs, update only non-None fields, increment `interaction_count`, set `last_used` to now. Save and return updated prefs. |
+| `clear_chat_memory` | `(chat_id: int) -> None` | Delete the chat's JSON file if it exists. |
+
+---
+
+### Step 5: Implement `memory_retriever.py` — Intelligent Memory Retrieval
+
+**File:** `memory_retriever.py`
+
+**Purpose:** Instead of dumping all memory into the prompt, this module selects only the *relevant* pieces of long-term memory based on the current message/query. This keeps our prompts lean and focused.
+
+**Retrieval strategy (keyword + recency scoring):**
+
+1. **Extract keywords** from the target message (split on whitespace, lowercase, remove stopwords like "the", "is", "a", "to", "and", "in", "it", "for", "of", "on", "i", "me", "my", "do", "don't", "what", "how", "this", "that").
+2. **Score each summary** from long-term memory:
+   - **Keyword overlap score:** Count how many of the summary's `key_terms` appear in the target message keywords. Score = `overlap_count / max(len(key_terms), 1)`.
+   - **Recency score:** `1.0 / (1 + days_since_summary)` — more recent = higher score.
+   - **Final score:** `0.7 * keyword_score + 0.3 * recency_score`.
+3. **Return top-K** summaries (K=3) with score > 0.1.
+4. For **notable messages**, do a simple substring match: if any keyword from the target message appears in the notable message's `text` or `explanation`, include it. Cap at 5 notable messages.
+
+**Required functions:**
+
+| Function | Signature | Behavior |
+|---|---|---|
+| `retrieve_relevant_context` | `(chat_id: int, target_message: str) -> str` | Run the retrieval strategy above. Return a formatted string block (see format below). Return `""` if nothing relevant found. |
+| `_extract_keywords` | `(text: str) -> set[str]` | Lowercase, split, remove stopwords, return set of remaining words. |
+| `_score_summary` | `(summary: dict, keywords: set[str]) -> float` | Compute the combined keyword+recency score. |
+
+**Output format of `retrieve_relevant_context`:**
+
+```
+[RELEVANT PAST CONTEXT]
+Summary (2 days ago): Group discussed weekend plans. Lots of Kanglish slang used.
+Notable: "Ayyo, don't put scene da" → means "Don't create drama/excuses" (Kanglish)
+Notable: "Macha come fast" → means "Bro come fast" (Kanglish)
+```
+
+If nothing is relevant, return empty string `""` (do NOT include the header).
+
+---
+
+### Step 6: Implement `ai_engine.py` — Gemini Integration
 
 **File:** `ai_engine.py`
 
-**Purpose:** Send chat context + a target message to Gemini and get back a cultural/linguistic explanation.
+**Purpose:** All Gemini API calls. Handles: explain, auto-reply generation (with tone), translation, and conversation summarization.
 
 **Specification:**
 
 1. **Module-level setup:**
    - Load `.env` with `dotenv`.
-   - Configure `genai` with the `GEMINI_API_KEY` env var.
-   - Instantiate a `GenerativeModel` using model name `"gemini-2.0-flash"`.
-   - Define a `SYSTEM_PROMPT` constant (see below).
+   - Configure `genai` with `GEMINI_API_KEY`.
+   - Instantiate `GenerativeModel` with model `"gemini-2.0-flash"`.
+   - Define `SYSTEM_PROMPT` (see below).
 
-2. **System prompt** (store as a constant string `SYSTEM_PROMPT`):
+2. **System prompt** (`SYSTEM_PROMPT` constant):
 
 ```
 You are BhashaBridge — an expert linguist and cultural translator for Indian code-mixed languages.
 You specialize in Hinglish (Hindi+English), Kanglish (Kannada+English), Tanglish (Tamil+English),
 Tenglish (Telugu+English), and other Indian language mixes.
 
-Your job:
-- If a message is plain, standard English with no slang or code-mixing, respond with exactly: NO_CONTEXT
-- Otherwise, provide:
-  **🗣️ Translation:** <literal English meaning>
-  **🎭 Vibe Check:** <cultural context — is it sarcasm? affection? frustration? humor?>
-  **📖 Slang Glossary:**
-  - <term 1>: <definition>
-  - <term 2>: <definition>
+You have three capabilities:
+1. EXPLAIN — decode code-mixed messages
+2. REPLY — generate contextually appropriate replies
+3. TRANSLATE — translate between English, Hindi, and Kannada
 
-Rules:
-- Be concise. Max 150 words.
-- Use emoji sparingly for readability.
-- Consider chat history for pronoun resolution and context.
-- Never fabricate meanings. If unsure, say so.
+Always be concise (max 150 words per response). Use emoji sparingly.
+Never fabricate meanings — if unsure, say so.
+Consider chat history and past context for accurate interpretation.
 ```
 
 3. **Required functions:**
 
 | Function | Signature | Behavior |
 |---|---|---|
-| `analyze_message` | `(history: str, target_message: str) -> str` | Build a user prompt combining history and target message (format below). Call `model.generate_content()`. Return `response.text`. On ANY exception, return `"⚠️ Couldn't process that. Try again!"`. |
-| `analyze_image` | `(image_bytes: bytes, caption: str \| None) -> str` | Create a PIL Image from bytes. Build a prompt asking to decode any code-mixed text visible in the image (plus optional caption for additional context). Call `model.generate_content([prompt_text, pil_image])`. Return `response.text`. On ANY exception, return `"⚠️ Couldn't read that image. Try again!"`. |
+| `explain_message` | `(recent_history: str, long_term_context: str, target_message: str) -> str` | Explain the target message. See prompt template below. Return `response.text`. On exception: `"⚠️ Couldn't process that. Try again!"`. |
+| `explain_with_translate` | `(recent_history: str, long_term_context: str, target_message: str, target_language: str) -> str` | Explain the target message (translation + vibe check + slang glossary + detected tone) but deliver the **entire explanation in `target_language`**. See prompt template below. Return `response.text`. On exception: `"⚠️ Couldn't process that. Try again!"`. |
+| `generate_reply` | `(recent_history: str, long_term_context: str, target_message: str, tone: str, language: str) -> str` | Generate a suggested reply to the target message with the specified tone in the specified language. See prompt template below. If a tone and language is not mentioned, take the predominant language and tone from the conversation. Return `response.text`. On exception: `"⚠️ Couldn't generate a reply. Try again!"`. |
+| `translate_message` | `(text: str, target_language: str) -> str` | Translate the given text to the target language. See prompt template below. Return `response.text`. On exception: `"⚠️ Couldn't translate. Try again!"`. |
+| `summarize_conversation` | `(messages_text: str) -> dict` | Summarize a batch of messages. Return a dict with keys `summary` (str), `key_terms` (list[str]), `participants` (list[str]). Parse the JSON from Gemini's response. On exception, return a fallback dict. |
+| `detect_tone` | `(recent_history: str, target_message: str) -> str` | Detect the tone/mood of the target message in context. Return a one-word or short-phrase tone like "casual", "sarcastic", "formal", "angry", "playful", etc. On exception, return `"casual"`. |
 
-4. **User prompt template for `analyze_message`:**
+4. **Prompt templates:**
+
+**`explain_message` prompt:**
 
 ```
+{long_term_context}
+
 [RECENT CHAT HISTORY]
-{history}
+{recent_history}
 
 [MESSAGE TO EXPLAIN]
 {target_message}
+
+TASK: Explain this message for someone who doesn't understand the code-mixed language.
+- If the message is plain standard English with no slang or code-mixing, respond with exactly: NO_CONTEXT
+- Otherwise provide:
+  **🗣️ Translation:** <literal English meaning>
+  **🎭 Vibe Check:** <cultural context — sarcasm? affection? frustration? humor?>
+  **📖 Slang Glossary:**
+  - <term>: <definition>
 ```
 
-5. **User prompt template for `analyze_image`:**
+**`explain_with_translate` prompt:**
 
 ```
-Analyze this image. It likely contains a screenshot of a chat in an Indian language or code-mixed text.
-Decode and explain any non-English or code-mixed text visible in the image.
-{f"Additional context from sender: {caption}" if caption else ""}
+{long_term_context}
+
+[RECENT CHAT HISTORY]
+{recent_history}
+
+[MESSAGE TO EXPLAIN]
+{target_message}
+
+TASK: Explain this message for someone who doesn't understand the code-mixed language.
+Deliver the ENTIRE explanation in {target_language}.
+- If the message is plain standard English with no slang or code-mixing, respond with exactly: NO_CONTEXT
+- Otherwise provide (all in {target_language}):
+  **🗣️ Translation:** <meaning of the message in {target_language}>
+  **🎭 Vibe Check:** <cultural context — sarcasm? affection? frustration? humor?>
+  **🎵 Tone:** <detected tone of the message, e.g. casual, sarcastic, formal, angry, playful>
+  **📖 Slang Glossary:**
+  - <term>: <definition in {target_language}>
 ```
 
-6. **Important implementation details:**
-   - Pass `SYSTEM_PROMPT` via the `system_instruction` parameter of `GenerativeModel(...)`, NOT inside the user prompt.
-   - Use `google.generativeai` (import as `genai`).
-   - Import `PIL.Image` and `io.BytesIO` for image handling.
+**`generate_reply` prompt:**
+
+```
+{long_term_context}
+
+[RECENT CHAT HISTORY]
+{recent_history}
+
+[MESSAGE TO REPLY TO]
+{target_message}
+
+TASK: Generate a natural, contextually appropriate reply to this message.
+- Tone: {tone}
+- Language: {language}
+- The reply should sound like something a real person would say in this conversation.
+- Match the conversational register (informal chat, formal, etc.).
+- Keep it short and natural (1-2 sentences max).
+- Output ONLY the reply text, nothing else.
+```
+
+**`translate_message` prompt:**
+
+```
+[TEXT TO TRANSLATE]
+{text}
+
+TASK: Translate the above text to {target_language}.
+- If the text is already fully in {target_language}, return it as-is.
+- Preserve the meaning, tone, and intent.
+- If there are culturally specific terms, translate them naturally (not word-for-word).
+- Output ONLY the translated text, nothing else.
+```
+
+**`summarize_conversation` prompt:**
+
+```
+[CONVERSATION]
+{messages_text}
+
+TASK: Summarize this conversation for long-term memory storage.
+Respond in this exact JSON format (no markdown fencing):
+{{"summary": "<2-3 sentence summary>", "key_terms": ["<slang/code-mixed terms used>"], "participants": ["<names of participants>"]}}
+```
+
+**`detect_tone` prompt:**
+
+```
+[RECENT CHAT HISTORY]
+{recent_history}
+
+[TARGET MESSAGE]
+{target_message}
+
+TASK: Detect the tone/mood of the target message given the conversation context.
+Respond with ONLY a single word or short phrase describing the tone.
+Examples: casual, sarcastic, formal, angry, playful, affectionate, frustrated, humorous, urgent
+```
+
+5. **Important implementation details:**
+   - Pass `SYSTEM_PROMPT` via the `system_instruction` parameter of `GenerativeModel(...)`, NOT inside user prompts.
+   - For `summarize_conversation`, use `json.loads()` to parse Gemini's response. If parsing fails, return `{"summary": response.text[:200], "key_terms": [], "participants": []}`.
+   - For `detect_tone`, strip whitespace and lowercase the response.
 
 ---
 
-### Step 5: Implement `main.py` — Telegram Bot
+### Step 7: Implement `main.py` — Telegram Bot (Inline Mode)
 
 **File:** `main.py`
 
-**Purpose:** Wire up Telegram bot handlers, manage message flow, and route to the AI engine.
+**Purpose:** Wire up all Telegram handlers. The bot operates in **inline mode** for user-facing features (explain, reply, translate) so that interactions are private and invisible to other group members.
+
+**How inline mode works for our use case:**
+- The bot **silently listens** to all group messages via a regular `MessageHandler` and stores them in memory.
+- When a user wants to interact, they **type `@BotUsername` in the chat input field**, which opens an inline query. They type their command after the bot username.
+- The bot responds with `InlineQueryResult` articles that only the querying user sees — until/unless the user selects one to post.
+- We also keep slash commands (`/start`, `/clear`, `/setlang`, `/settone`) for configuration since those work in private chat with the bot.
 
 **Specification:**
 
-1. **Imports:** `os`, `logging`, `telegram` (Update, etc.), `telegram.ext` (ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters), `ai_engine`, `memory`, `dotenv`.
+1. **Imports:** `os`, `logging`, `json`, `telegram` (Update, InlineQueryResultArticle, InputTextMessageContent), `telegram.ext` (ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, InlineQueryHandler, filters), `ai_engine`, `memory`, `long_memory`, `memory_retriever`, `dotenv`, `uuid`.
 
-2. **Logging:** Configure logging at `INFO` level with format `%(asctime)s - %(name)s - %(levelname)s - %(message)s`.
+2. **Logging:** Configure at `INFO` level.
 
-3. **Handlers to register (in this order):**
+3. **Constants:**
+   - `SUPPORTED_LANGUAGES = {"english": "English", "hindi": "Hindi", "kannada": "Kannada"}`
+   - `SUMMARY_TRIGGER = 20` — summarize to long-term memory every 20 messages.
+   - Module-level `message_counters: dict[int, int] = {}` — tracks messages per chat since last summary.
+
+4. **Helper function: `maybe_summarize`**
+
+```python
+async def maybe_summarize(chat_id: int):
+    """If enough messages have accumulated, summarize and store in long-term memory."""
+    message_counters.setdefault(chat_id, 0)
+    message_counters[chat_id] += 1
+    if message_counters[chat_id] >= SUMMARY_TRIGGER:
+        history = memory.get_history_text(chat_id, n=20)
+        if history:
+            result = ai_engine.summarize_conversation(history)
+            messages = memory.get_recent_messages(chat_id, n=20)
+            participants = list(set(m["user"] for m in messages))
+            long_memory.add_summary(
+                chat_id, result["summary"],
+                result["key_terms"],
+                result.get("participants", participants)
+            )
+        message_counters[chat_id] = 0
+```
+
+5. **Handlers to register:**
 
 | Handler | Type | Trigger | Behavior |
 |---|---|---|---|
-| `/start` | `CommandHandler` | `/start` | Reply with a welcome message explaining what the bot does and how to use `/explain`. |
-| `/explain` | `CommandHandler` | `/explain` | If the user **replied** to another message, use that replied-to message as the target. Otherwise, use the last message in history. Call `analyze_message(history, target)`. Reply with the result. Skip if result contains `"NO_CONTEXT"`. If NO_CONTEXT, reply with `"That message looks like plain English to me! 👍"`. |
-| `/clear` | `CommandHandler` | `/clear` | Call `memory.clear_history(chat_id)`. Reply `"🧹 Context cleared!"`. |
-| `text_listener` | `MessageHandler` | `filters.TEXT & (~filters.COMMAND)` | Silently store the message in memory via `add_message`. **Do not reply.** Also check: if the bot's username is @-mentioned in the text, treat it like `/explain` was called. |
-| `photo_handler` | `MessageHandler` | `filters.PHOTO` | Download the highest-resolution photo. Call `analyze_image(image_bytes, caption)`. Reply with the result. |
+| `/start` | `CommandHandler` | `/start` | Reply with welcome message (see below). Works in private chat. |
+| `/clear` | `CommandHandler` | `/clear` | Clear both short-term and long-term memory for the chat. Reply `"🧹 All memory cleared!"`. |
+| `/setlang` | `CommandHandler` | `/setlang <language>` | Parse the language argument. Validate it's in `SUPPORTED_LANGUAGES`. Update user prefs via `long_memory.update_user_prefs`. Reply with confirmation. If invalid, show supported languages. |
+| `/settone` | `CommandHandler` | `/settone <tone>` | Set user's preferred default tone. Update user prefs. Reply with confirmation. If no argument given, clear the tone preference (set to `null`). |
+| `text_listener` | `MessageHandler` | `filters.TEXT & (~filters.COMMAND) & filters.ChatType.GROUPS` (use `filters.ChatType.SUPERGROUP | filters.ChatType.GROUP`) | Silently store message in short-term memory. Call `maybe_summarize`. **Never reply.** |
+| `inline_handler` | `InlineQueryHandler` | Any inline query | Parse the query and route to explain/reply/translate (see detailed spec below). |
 
-4. **`/start` welcome message** (use Markdown parse mode):
+6. **`/start` welcome message** (Markdown):
 
 ```
-🌉 *BhashaBridge* — Your code-mixed chat translator!
+🌉 *BhashaBridge* — Your invisible code-mixed chat translator!
 
-I silently listen to group chats and can explain Indian slang, Hinglish, Kanglish, Tanglish, and more.
+I silently learn your group's conversation and help you understand slang, code-mixed language, and cultural context — all privately via inline mode.
 
-*How to use:*
-• Reply to any confusing message with /explain
-• Send me a screenshot of a chat to decode
-• Use /clear to reset my memory
+*How to use (type in any chat):*
+• `@BotUsername explain <message>` — Decode a message
+• `@BotUsername explaintranslate hindi <message>` — Explain in Hindi (or kannada)
+• `@BotUsername reply <message>` — Get a suggested reply
+• `@BotUsername reply formal <message>` — Reply in a specific tone
+• `@BotUsername translate hindi <message>` — Translate to a language
+• `@BotUsername translate kannada <message>` — Translate to Kannada
 
-_Add me to a group chat to get started!_
+*Settings (DM the bot):*
+• /setlang <english|hindi|kannada> — Set default language
+• /settone <casual|formal|...> — Set default reply tone
+• /clear — Reset all memory
+
+_Add me to a group and I'll silently learn the conversation!_
 ```
 
-5. **Critical implementation details:**
-   - Use `async def` for all handlers (python-telegram-bot v20+ is fully async).
-   - For the `/explain` command: check `update.message.reply_to_message` to see if the user replied to a specific message. If yes, use `update.message.reply_to_message.text` as the target. If no, grab the last message from `memory.get_history()` (split by `\n`, take the last line).
-   - For `text_listener`: check if bot username is mentioned via `f"@{context.bot.username}"` (case-insensitive check). If mentioned, strip the mention from the text and run the explain flow.
-   - For `photo_handler`: use `await update.message.photo[-1].get_file()` then `await file.download_as_bytearray()` to get bytes.
-   - `reply_text` should use `parse_mode="Markdown"`. Wrap in try/except — if Markdown parsing fails, retry without parse_mode.
-   - **Entry point** (`if __name__ == "__main__":`): Build the application with `ApplicationBuilder().token(os.getenv("TELEGRAM_TOKEN")).build()`, register all handlers, print `"🌉 BhashaBridge is live!"`, then call `app.run_polling(allowed_updates=Update.ALL_TYPES)`.
+Replace `@BotUsername` with the actual bot username dynamically using `context.bot.username`.
+
+7. **Inline query handler — detailed spec:**
+
+The `inline_handler` function receives `update.inline_query.query` (the text the user typed after `@BotUsername `).
+
+**Parse the query** into a command and arguments:
+
+| Query pattern | Action |
+|---|---|
+| `explain <text>` | Explain the given text (or if text is empty/short, explain the last message in the chat's history). |
+| `explaintranslate <language> <text>` | Explain the message AND deliver the explanation in `<language>`. If `<language>` not in SUPPORTED_LANGUAGES, use user's preferred language. Also detects and mentions the tone. |
+| `reply <text>` | Auto-detect tone, generate reply for `<text>`. |
+| `reply <tone> <text>` | If the first word after "reply" is a recognized tone word (check a set: `casual, formal, sarcastic, funny, angry, polite, friendly, professional, flirty, chill`), use it as tone. Otherwise treat everything as the message text and auto-detect tone. |
+| `translate <language> <text>` | Translate `<text>` to `<language>`. If `<language>` is not in SUPPORTED_LANGUAGES, treat the whole thing as text and use user's preferred language. |
+| _(anything else)_ | Default: treat entire query as an "explain" request. |
+
+**For each action:**
+
+a. **Explain flow:**
+   - Get the user's chat context. Since inline queries don't carry `chat_id` of the group, we need a workaround: use the user's most recent chat from `memory`. Store a mapping `user_last_chat: dict[int, int]` (user_id → last chat_id they sent a message in). Update this in `text_listener`.
+   - Get `recent_history` from `memory.get_history_text(chat_id)`.
+   - Get `long_term_context` from `memory_retriever.retrieve_relevant_context(chat_id, target_text)`.
+   - Call `ai_engine.explain_message(recent_history, long_term_context, target_text)`.
+   - If result contains `NO_CONTEXT`, show an inline result saying "That looks like plain English 👍".
+   - Otherwise, store the notable message via `long_memory.add_notable_message(...)`.
+   - Return the result as an `InlineQueryResultArticle`.
+
+b. **Reply flow:**
+   - If no tone specified by user, call `ai_engine.detect_tone(recent_history, target_text)` to auto-detect.
+   - Load user prefs for language. If user hasn't set a language, default to `"english"`.
+   - If user has a `preferred_tone` set and didn't specify one in the query, use the preferred tone.
+   - Call `ai_engine.generate_reply(recent_history, long_term_context, target_text, tone, language)`.
+   - **Return TWO inline results:**
+     1. The generated reply (title: "💬 Suggested Reply ({tone})")  — selecting this **sends the reply into the chat**.
+     2. An explanation of the original message (title: "🔍 Explain First") — in case the user wants to understand before replying.
+
+c. **Explain + Translate flow** (`explaintranslate`):
+   - Parse the language from the first word after `explaintranslate`. Validate against `SUPPORTED_LANGUAGES`. If invalid, fall back to user's `preferred_language` from prefs.
+   - Get `recent_history` and `long_term_context` (same as explain flow).
+   - Call `ai_engine.explain_with_translate(recent_history, long_term_context, target_text, target_language)`.
+   - If result contains `NO_CONTEXT`, show "That looks like plain English 👍".
+   - Otherwise return the result as an `InlineQueryResultArticle` (title: "🌐 Explain in {language}").
+   - **Also return a second inline result:** a suggested reply in the same target language using `ai_engine.generate_reply(...)` with auto-detected tone (title: "💬 Reply in {language}").
+
+d. **Translate flow:**
+   - Call `ai_engine.translate_message(target_text, target_language)`.
+   - Return the translation as an `InlineQueryResultArticle`.
+
+**Inline result construction:**
+
+```python
+InlineQueryResultArticle(
+    id=str(uuid.uuid4()),
+    title="<title>",
+    description="<first 100 chars of result>",
+    input_message_content=InputTextMessageContent(
+        message_text=result_text,
+        parse_mode="Markdown"
+    )
+)
+```
+
+Call `await update.inline_query.answer(results, cache_time=0, is_personal=True)`.
+- `is_personal=True` ensures results are specific to the querying user.
+- `cache_time=0` ensures fresh results every time.
+
+8. **Critical implementation details:**
+   - `text_listener` must update `user_last_chat[update.effective_user.id] = update.effective_chat.id` so inline queries can look up the user's active group.
+   - `user_last_chat` is a module-level dict.
+   - For Markdown parse mode failures: wrap `answer()` in try/except— if it fails, retry with `parse_mode=None`.
+   - **Entry point** (`if __name__ == "__main__"`): Build app, register all handlers, print `"🌉 BhashaBridge is live!"`, call `app.run_polling(allowed_updates=Update.ALL_TYPES)`.
+   - The `InlineQueryHandler` must be registered with NO pattern filter (catch all inline queries).
+   - `text_listener` should use `filters.UpdateType.MESSAGE & filters.TEXT & ~filters.COMMAND` combined with group chat filters.
 
 ---
 
 ## 3. Verification Checklist
 
-After all files are created, verify the following:
+After all files are created, verify:
 
 ### A. Static Checks
 
-- [ ] All 5 files exist: `.gitignore`, `requirements.txt`, `memory.py`, `ai_engine.py`, `main.py`
-- [ ] `memory.py` has no external dependencies beyond stdlib
-- [ ] `ai_engine.py` imports `google.generativeai`, `PIL.Image`, `io`, `os`, `dotenv`
-- [ ] `main.py` imports from `ai_engine` and `memory` correctly
-- [ ] No hardcoded API keys or tokens anywhere — all from `.env`
-- [ ] Python syntax check passes: `python -m py_compile main.py ai_engine.py memory.py`
+- [ ] All 7 files exist: `.gitignore`, `requirements.txt`, `memory.py`, `long_memory.py`, `memory_retriever.py`, `ai_engine.py`, `main.py`
+- [ ] `memory.py` and `memory_retriever.py` have no external dependencies beyond stdlib + `long_memory`
+- [ ] `long_memory.py` has no external dependencies beyond stdlib
+- [ ] `ai_engine.py` imports only `google.generativeai`, `os`, `json`, `dotenv`
+- [ ] `main.py` imports from all internal modules correctly
+- [ ] No hardcoded API keys or tokens anywhere
+- [ ] Python syntax check: `python -m py_compile main.py ai_engine.py memory.py long_memory.py memory_retriever.py`
 
 ### B. Runtime Smoke Test
 
@@ -240,7 +533,18 @@ After all files are created, verify the following:
 python main.py
 ```
 
-Expected: prints `"🌉 BhashaBridge is live!"` and starts polling without errors (will fail gracefully if `.env` tokens are missing/invalid, but should NOT crash with an unhandled exception).
+Expected: prints `"🌉 BhashaBridge is live!"` and starts polling without errors.
+
+### C. Functional Test Manually
+
+1. Add bot to a Telegram group → sends messages → bot is silent (stores messages)
+2. In the group, type `@BotUsername explain macha don't put scene` → see inline results
+3. Select a result → only you see the explanation (or it posts if you choose to)
+4. Type `@BotUsername reply formal macha don't put scene` → get a formal reply suggestion
+5. Type `@BotUsername translate kannada bro come fast` → get Kannada translation
+6. DM the bot → `/setlang hindi` → confirmed
+7. DM the bot → `/settone casual` → confirmed
+8. DM the bot → `/clear` → memory cleared
 
 ---
 
@@ -248,21 +552,29 @@ Expected: prints `"🌉 BhashaBridge is live!"` and starts polling without error
 
 | Feature | Implementation |
 |---|---|
-| **Silent Listening** | `text_listener` stores all group messages, never replies unless triggered |
-| **On-Demand Explain** | `/explain` command or @-mention triggers AI analysis |
-| **Reply-to-Explain** | Reply to a specific message + `/explain` to target that exact message |
-| **Sliding Window Context** | Last 15 messages stored per chat for pronoun/context resolution |
-| **Image Decode** | Send a photo (e.g., WhatsApp screenshot) and bot decodes visible text |
-| **Cultural Nuance** | System prompt instructs Gemini to explain vibe, sarcasm, emotion — not just translate |
-| **Memory Clear** | `/clear` resets context for a chat |
+| **Invisible / Inline Mode** | All user interactions via inline queries — invisible to other group members |
+| **Silent Listening** | `text_listener` stores group messages, never replies |
+| **On-Demand Explain** | `@Bot explain <msg>` decodes code-mixed messages |
+| **Explain in Your Language** | `@Bot explaintranslate hindi <msg>` — full explanation delivered in Hindi/Kannada with tone detection |
+| **Smart Auto-Reply** | `@Bot reply <msg>` generates a contextual reply with auto-detected tone |
+| **Tone Control** | `@Bot reply formal <msg>` or `/settone` for default tone |
+| **Tone Auto-Detection** | If no tone specified, Gemini detects tone from context |
+| **Multi-Language Translation** | `@Bot translate hindi/kannada/english <msg>` |
+| **Language Preference** | `/setlang` sets default language for replies and translations |
+| **Short-Term Memory** | Last 20 messages per chat in-memory sliding window |
+| **Long-Term Memory** | Conversation summaries + notable messages persisted in JSON files |
+| **Smart Retrieval** | Only relevant long-term memories are injected into prompts (keyword + recency scoring) |
+| **Auto-Summarization** | Every 20 messages, conversation is auto-summarized to long-term memory |
+| **Memory Management** | `/clear` resets both short-term and long-term memory |
 
 ---
 
 ## 5. Demo Script (For Judges)
 
-1. **Create Telegram group** "Weekend Plans". Add the bot.
-2. **User A** sends: *"Macha, traffic is too much, I'll be late."*
-3. **User B** sends: *"Ayyo, don't put scene da. Just come."*
-4. **User A** replies to User B's message with `/explain`.
-5. **Bot responds** with translation, vibe check, and slang glossary.
-6. **Bonus:** Forward a Hindi/Kannada WhatsApp screenshot to the bot → bot decodes it.
+1. **Setup:** Create Telegram group "Weekend Plans". Add the bot. Send a few messages back and forth in Kanglish/Hinglish.
+2. **Explain:** Type `@BhashaBridge explain Ayyo don't put scene da` → select the inline result → see cultural explanation privately.
+3. **Explain in Hindi:** Type `@BhashaBridge explaintranslate hindi Ayyo don't put scene da` → explanation fully in Hindi, with detected tone.
+4. **Auto-Reply:** Type `@BhashaBridge reply Ayyo don't put scene da` → bot suggests a casual reply → tap to send it.
+5. **Tone Override:** Type `@BhashaBridge reply formal Ayyo don't put scene da` → get a formal-toned reply.
+6. **Translate:** Type `@BhashaBridge translate kannada bro I'll be there in 10 minutes` → Kannada translation.
+7. **Long-Term Memory:** After 20+ messages, the bot creates a summary. Future explanations reference past context intelligently.
