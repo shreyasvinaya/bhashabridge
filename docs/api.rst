@@ -230,7 +230,7 @@ ai_engine Module
 
 .. py:data:: MODEL_NAME
    
-   Gemini model identifier. Default: ``"gemini-2.0-flash"``
+   Gemini model identifier. Default: ``"gemini-3-flash-preview"``
 
 .. py:data:: SYSTEM_PROMPT
    

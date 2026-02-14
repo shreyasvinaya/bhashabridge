@@ -21,7 +21,7 @@ if api_key:
     client = genai.Client(api_key=api_key)
 
 # Model name
-MODEL_NAME = "gemini-2.0-flash"
+MODEL_NAME = "gemini-3-flash-preview"
 
 # System prompt for all interactions
 SYSTEM_PROMPT = """You are BhashaBridge — an expert linguist and cultural translator for Indian code-mixed languages.
