@@ -210,51 +210,6 @@ Rules:
         }
 
 
-def analyze_conversation(
-    conversation_text: str,
-    language: str = "english",
-) -> str:
-    """Summarize a multi-message conversation in 2 lines.
-
-    Args:
-        conversation_text: Formatted multi-line string of recent messages
-            (e.g. "Alice: kya scene hai\nBob: chill maadi").
-        language: The language to write the summary in (e.g. "english",
-            "hindi", "kannada").
-
-    Returns:
-        A short 2-line summary string in the requested language.
-    """
-    if client is None:
-        return "(AI unavailable — could not summarize.)"
-
-    try:
-        prompt = f"""[CONVERSATION]
-{conversation_text}
-
-TASK: Summarize the above conversation in exactly 2 well-written, detailed sentences in {language}.
-- The first sentence should capture WHO is talking and WHAT they are discussing — include specific topics, decisions, or events mentioned.
-- The second sentence should convey the VIBE and MOOD of the conversation — are people excited, frustrated, joking around, making plans, arguing, being supportive? Paint a picture of the energy.
-- If any slang or code-mixed terms (like Hinglish, Kanglish, etc.) are key to understanding the conversation, naturally weave their meaning into the sentences.
-- Each sentence should be rich and complete (15-30 words each), not telegraphic.
-- Output ONLY the 2 sentences, nothing else."""
-
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                max_output_tokens=300,
-            ),
-        )
-        return response.text.strip()
-
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"analyze_conversation failed: {e}", exc_info=True)
-        return "(Could not summarize the conversation. Please try again.)"
-
-
 def explain_message(
     recent_history: str,
     long_term_context: str,

@@ -96,7 +96,6 @@ RECOGNIZED_TONES = {
 }
 
 
-
 def _format_explanation_from_analysis(analysis: dict, translated_text: str | None = None) -> str:
     """Format explanation output from analyze_message response."""
     translation = (
@@ -343,7 +342,7 @@ async def inline_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     try:
         if command == "explain":
-            await _handle_explain(update, chat_id, user_id, args)
+            await _handle_explain(update, chat_id, args)
         elif command == "explaintranslate":
             await _handle_explaintranslate(update, chat_id, user_id, args)
         elif command == "reply":
@@ -371,10 +370,12 @@ async def inline_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.warning("Could not send error result — inline query already expired.")
 
 
-async def _handle_explain(update: Update, chat_id: int | None, user_id: int, text: str) -> None:
+async def _handle_explain(update: Update, chat_id: int | None, text: str) -> None:
     """Handle 'explain' inline command."""
+    user_provided_text = bool(text)  # True if user typed explicit text after 'explain'
+
     if not text:
-        # If no text provided, summarize the last 10 messages
+        # If no text provided, explain the latest message using last 10 messages as context
         recent = memory.get_recent_messages(chat_id, n=10) if chat_id else []
         if not recent:
             results = [
@@ -389,39 +390,23 @@ async def _handle_explain(update: Update, chat_id: int | None, user_id: int, tex
             ]
             await update.inline_query.answer(results, cache_time=0, is_personal=True)
             return
+        # Use the most recent message as the target to explain
+        text = recent[-1]["text"]
 
-        # Get user's preferred language
-        prefs = long_memory.load_user_prefs(user_id)
-        language = prefs.get("preferred_language", "english")
-
-        # Combine last 10 messages and get a 2-line summary
-        conversation_text = "\n".join(f"{m['user']}: {m['text']}" for m in recent)
-        summary = await asyncio.to_thread(
-            ai_engine.analyze_conversation, conversation_text, language
-        )
-
-        results = [
-            InlineQueryResultArticle(
-                id=str(uuid.uuid4()),
-                title="📋 Chat Summary",
-                description=summary[:100],
-                input_message_content=InputTextMessageContent(summary),
-            )
-        ]
-        await update.inline_query.answer(results, cache_time=0, is_personal=True)
-        return
-
-    # User provided explicit text — analyze as a single message
+    # Get last 10 messages as conversation context for accurate interpretation
     recent_history = memory.get_history_text(chat_id, n=10) if chat_id else ""
+    # long_term_context = memory_retriever.retrieve_relevant_context(chat_id, text) if chat_id else ""
     long_term_context = ""
 
+    # Single AI call (faster than multiple chained calls)
     analysis = await asyncio.to_thread(
         ai_engine.analyze_message, recent_history, long_term_context, text
     )
     explanation = _format_explanation_from_analysis(analysis)
 
-    # Show "Plain English" only when Gemini confirms it's plain English
-    if analysis.get("is_english") is True:
+    # Only show "Plain English" when user provided a single explicit message
+    # and Gemini confirmed it's plain English. Never skip when using chat context.
+    if user_provided_text and analysis.get("is_english") is True:
         results = [
             InlineQueryResultArticle(
                 id=str(uuid.uuid4()),
@@ -433,12 +418,13 @@ async def _handle_explain(update: Update, chat_id: int | None, user_id: int, tex
             )
         ]
     else:
+        # Store as notable message (extract info from explanation)
         if chat_id is not None:
             long_memory.add_notable_message(
                 chat_id,
                 "User",
                 text,
-                explanation[:200],
+                explanation[:200],  # Truncate for storage
                 analysis.get("detected_language", "Unknown"),
             )
 
