@@ -1,7 +1,7 @@
 # 🌉 BhashaBridge
 > **Don't just translate words. Understand the vibe.**
 
-[![Gemini 2.0 Flash](https://img.shields.io/badge/Powered%20By-Gemini%202.0%20Flash-blue)](https://deepmind.google/technologies/gemini/)
+[![Gemini 3.0 Flash](https://img.shields.io/badge/Powered%20By-Gemini%202.0%20Flash-blue)](https://deepmind.google/technologies/gemini/)
 [![Telegram](https://img.shields.io/badge/Platform-Telegram%20Inline-2CA5E0)](https://telegram.org/)
 [![Hackathon](https://img.shields.io/badge/Event-Gemini%203%20Bengaluru-orange)](https://ai.google.dev/)
 
@@ -19,7 +19,7 @@ Standard translators fail here. They can translate the words, but they miss:
 ## 💡 The Solution: BhashaBridge
 BhashaBridge is an **invisible, context-aware AI companion** that lives in your chat app. It doesn't just translate; it **culturalizes**.
 
-Using **Google's Gemini 2.0 Flash**, it analyzes live conversations to provide:
+Using **Google's Gemini 3.0 Flash**, it analyzes live conversations to provide:
 -   **🎭 Vibe Checks**: Detects if a message is sarcastic, formal, or casual.
 -   **📖 Slang Glossaries**: Explains "Macha", "Jugaad", "Scene" in real-time.
 -   **💬 Smart Replies**: Suggests responses that match the *tone* of the group.
@@ -60,7 +60,7 @@ Using **Google's Gemini 2.0 Flash**, it analyzes live conversations to provide:
 
 ## 🛠️ Tech Stack
 
--   **LLM**: **Google Gemini 2.0 Flash** (via `google-generativeai` SDK) for lightning-fast token generation and nuanced cultural understanding.
+-   **LLM**: **Google Gemini 3.0 Flash** (via `google-genai` SDK) for lightning-fast token generation and nuanced cultural understanding.
 -   **Platform**: **Telegram Bot API** (Python) utilizing `InlineQueryResultArticle` for private interaction.
 -   **Memory**: 
     -   *Short-term*: In-memory sliding window deque.
@@ -102,22 +102,6 @@ GEMINI_API_KEY=your_gemini_api_key
 ```bash
 python main.py
 ```
-
----
-
-## 🎮 How to Demo (Judge's Guide)
-
-1.  **Add the bot** to a test group (optional, but helps it learn context).
-2.  Send a code-mixed message in the group:
-    > *"Macha, boss is calling for that review meeting within 5 mins, full tension scenario!"*
-3.  **The Magic**: In the text input (don't send!), type:
-    `@YourBotName explain Macha...`
-4.  **See the Result**: The bot will pop up a result only **you** can see, explaining:
-    -   **Translation**: "Bro, boss wants the review meeting in 5 mins, it's a stressful situation."
-    -   **Vibe**: Urgent, Stressful, Informal.
-    -   **Slang**: Macha (Bro), Full tension (Very stressful).
-5.  **Reply**: Type `@YourBotName reply casual` to get a generated reply like:
-    > *"Ayyo, tell him 5 mins not possible, need more time da!"*
 
 ---
 
