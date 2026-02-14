@@ -6,6 +6,7 @@ explanation, translation, reply generation, and conversation summarization.
 
 import json
 import os
+import time
 
 from dotenv import load_dotenv
 from google import genai
@@ -22,6 +23,10 @@ if api_key:
 
 # Model name
 MODEL_NAME = "gemini-3-flash-preview"
+
+# In-memory cache for repeated inline requests (same user query often sent multiple times)
+ANALYSIS_CACHE_TTL_SECONDS = 45
+_analysis_cache: dict[str, tuple[float, dict]] = {}
 
 # System prompt for all interactions
 SYSTEM_PROMPT = """You are BhashaBridge — an expert linguist and cultural translator for Indian code-mixed languages.
@@ -59,6 +64,11 @@ def _clean_json_response(text: str) -> str:
         text = text[:-3]
 
     return text.strip()
+
+
+def _analysis_cache_key(recent_history: str, long_term_context: str, target_message: str) -> str:
+    """Build stable cache key for analysis requests."""
+    return "\n||\n".join([recent_history.strip(), long_term_context.strip(), target_message.strip()])
 
 
 def analyze_message(
@@ -112,6 +122,12 @@ def analyze_message(
             },
         }
 
+    cache_key = _analysis_cache_key(recent_history, long_term_context, target_message)
+    cached = _analysis_cache.get(cache_key)
+    now = time.time()
+    if cached and (now - cached[0]) <= ANALYSIS_CACHE_TTL_SECONDS:
+        return cached[1]
+
     try:
         prompt = f"""{long_term_context}
 
@@ -155,11 +171,22 @@ Rules:
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
+                max_output_tokens=700,
             ),
         )
         cleaned_text = _clean_json_response(response.text)
 
-        return json.loads(cleaned_text)
+        parsed = json.loads(cleaned_text)
+        _analysis_cache[cache_key] = (now, parsed)
+
+        # Lightweight cache cleanup
+        if len(_analysis_cache) > 200:
+            expiry = now - ANALYSIS_CACHE_TTL_SECONDS
+            stale_keys = [k for k, (ts, _) in _analysis_cache.items() if ts < expiry]
+            for key in stale_keys:
+                _analysis_cache.pop(key, None)
+
+        return parsed
 
     except Exception:
         # Return fallback on any error
