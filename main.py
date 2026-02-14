@@ -98,9 +98,6 @@ RECOGNIZED_TONES = {
 
 def _format_explanation_from_analysis(analysis: dict, translated_text: str | None = None) -> str:
     """Format explanation output from analyze_message response."""
-    if analysis.get("is_english") is True:
-        return "NO_CONTEXT"
-
     translation = (
         translated_text
         or analysis.get("translation")
@@ -194,8 +191,10 @@ I silently learn your group's conversation and help you understand slang, code-m
 *How to use (type in any chat):*
 • `@{bot_username} explain <message>` — Decode a message
 • `@{bot_username} explaintranslate hindi <message>` — Explain in Hindi (or kannada)
-• `@{bot_username} reply <message>` — Get a suggested reply
-• `@{bot_username} reply formal <message>` — Reply in a specific tone
+• `@{bot_username} reply` — Auto-reply based on last 10 messages
+• `@{bot_username} reply formal` — Reply in a specific tone
+• `@{bot_username} reply formal hindi` — Reply in a specific tone + language
+• `@{bot_username} reply hindi` — Reply in a specific language
 • `@{bot_username} translate hindi <message>` — Translate to a language
 • `@{bot_username} translate kannada <message>` — Translate to Kannada
 
@@ -373,9 +372,11 @@ async def inline_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def _handle_explain(update: Update, chat_id: int | None, text: str) -> None:
     """Handle 'explain' inline command."""
+    user_provided_text = bool(text)  # True if user typed explicit text after 'explain'
+
     if not text:
-        # If no text provided, explain the last message
-        recent = memory.get_recent_messages(chat_id, n=1) if chat_id else []
+        # No text provided — summarize the last 10 messages
+        recent = memory.get_recent_messages(chat_id, n=10) if chat_id else []
         if not recent:
             results = [
                 InlineQueryResultArticle(
@@ -389,11 +390,27 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
             ]
             await update.inline_query.answer(results, cache_time=0, is_personal=True)
             return
-        text = recent[0]["text"]
 
-    # Get context (empty if no chat context)
-    recent_history = memory.get_history_text(chat_id, n=6) if chat_id else ""
-    # long_term_context = memory_retriever.retrieve_relevant_context(chat_id, text) if chat_id else ""
+        # Build conversation text from last 10 messages
+        conversation_text = "\n".join(f"{m['user']}: {m['text']}" for m in recent)
+
+        # Ask Gemini for a concise 4-5 line summary of the conversation
+        summary = await asyncio.to_thread(ai_engine.summarize_chat_context, conversation_text)
+
+        results = [
+            InlineQueryResultArticle(
+                id=str(uuid.uuid4()),
+                title="📋 Conversation Summary",
+                description=summary[:100] + "...",
+                input_message_content=InputTextMessageContent(summary, parse_mode="Markdown"),
+            )
+        ]
+        await update.inline_query.answer(results, cache_time=0, is_personal=True)
+        return
+
+    # User provided explicit text — explain that specific message
+    # Get last 10 messages as conversation context for accurate interpretation
+    recent_history = memory.get_history_text(chat_id, n=10) if chat_id else ""
     long_term_context = ""
 
     # Single AI call (faster than multiple chained calls)
@@ -402,7 +419,8 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
     )
     explanation = _format_explanation_from_analysis(analysis)
 
-    if "NO_CONTEXT" in explanation:
+    # Show "Plain English" only when Gemini confirmed it's plain English
+    if analysis.get("is_english") is True:
         results = [
             InlineQueryResultArticle(
                 id=str(uuid.uuid4()),
@@ -414,13 +432,13 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
             )
         ]
     else:
-        # Store as notable message (extract info from explanation)
+        # Store as notable message
         if chat_id is not None:
             long_memory.add_notable_message(
                 chat_id,
                 "User",
                 text,
-                explanation[:200],  # Truncate for storage
+                explanation[:200],
                 analysis.get("detected_language", "Unknown"),
             )
 
@@ -466,7 +484,7 @@ async def _handle_explaintranslate(
         target_lang = prefs.get("preferred_language", "english")
 
     # Get context (empty if no chat context)
-    recent_history = memory.get_history_text(chat_id, n=6) if chat_id else ""
+    recent_history = memory.get_history_text(chat_id, n=10) if chat_id else ""
     # long_term_context = memory_retriever.retrieve_relevant_context(chat_id, text) if chat_id else ""
     long_term_context = ""
 
@@ -479,7 +497,7 @@ async def _handle_explaintranslate(
     )
     explanation = _format_explanation_from_analysis(analysis, translated_text=translated_text)
 
-    if "NO_CONTEXT" in explanation:
+    if analysis.get("is_english") is True:
         results = [
             InlineQueryResultArticle(
                 id=str(uuid.uuid4()),
@@ -516,80 +534,68 @@ async def _handle_explaintranslate(
 
 
 async def _handle_reply(update: Update, chat_id: int | None, user_id: int, args: str) -> None:
-    """Handle 'reply' inline command."""
-    parts = args.split(maxsplit=1)
+    """Handle 'reply' inline command.
 
-    if not parts:
+    Generates a contextual reply based on the last 10 messages in the chat.
+    Uses the predominant language and detected tone from the conversation.
+    Optional overrides: reply [tone] [language]
+    """
+    # Parse optional tone and/or language overrides from args
+    tokens = args.split()
+    requested_tone: str | None = None
+    requested_language: str | None = None
+
+    for token in tokens:
+        tok = token.lower()
+        if requested_tone is None and tok in RECOGNIZED_TONES:
+            requested_tone = tok
+        elif requested_language is None and tok in SUPPORTED_LANGUAGES:
+            requested_language = tok
+
+    # Get last 10 messages as context
+    recent = memory.get_recent_messages(chat_id, n=10) if chat_id else []
+    if not recent:
         results = [
             InlineQueryResultArticle(
                 id=str(uuid.uuid4()),
-                title="⚠️ Invalid Format",
-                description="Usage: reply [tone] <message>",
+                title="⚠️ No Messages",
+                description="No recent messages to reply to.",
                 input_message_content=InputTextMessageContent(
-                    "Please use: reply [casual|formal|...] <message>"
+                    "No recent messages found in this chat."
                 ),
             )
         ]
         await update.inline_query.answer(results, cache_time=0, is_personal=True)
         return
 
-    # Check if first word is a recognized tone
-    maybe_tone = parts[0].lower()
-    if maybe_tone in RECOGNIZED_TONES and len(parts) > 1:
-        requested_tone = maybe_tone
-        text = parts[1]
-    else:
-        # No explicit tone in query
-        text = args
-        requested_tone = None
-
-        # Check user preferences
-        prefs = long_memory.load_user_prefs(user_id)
-        requested_tone = prefs.get("preferred_tone")
-
-    # Get context (empty if no chat context)
-    recent_history = memory.get_history_text(chat_id, n=6) if chat_id else ""
-    # long_term_context = memory_retriever.retrieve_relevant_context(chat_id, text) if chat_id else ""
+    # Build conversation context and isolate the last message as the target
+    conversation_text = "\n".join(f"{m['user']}: {m['text']}" for m in recent)
+    last_message = f"{recent[-1]['user']}: {recent[-1]['text']}"
     long_term_context = ""
 
-    # Single AI call and reuse everything
-    analysis = await asyncio.to_thread(
-        ai_engine.analyze_message, recent_history, long_term_context, text
+    # Always use user's preferred language from /setlang (default: english)
+    prefs = long_memory.load_user_prefs(user_id)
+    tone = requested_tone or prefs.get("preferred_tone") or "match the conversation's natural tone"
+    language = requested_language or prefs.get("preferred_language", "english")
+
+    # Single generate_reply call — fast and reliable
+    reply = await asyncio.to_thread(
+        ai_engine.generate_reply,
+        conversation_text,
+        long_term_context,
+        last_message,
+        tone,
+        language,
     )
-    reply, tone = _reply_from_analysis(analysis, requested_tone=requested_tone)
 
-    # Preserve custom-tone behavior with a second call only when needed
-    if requested_tone and requested_tone not in {"casual", "formal"}:
-        if requested_tone != (analysis.get("tone") or "").strip().lower():
-            prefs = long_memory.load_user_prefs(user_id)
-            language = prefs.get("preferred_language", "english")
-            reply = await asyncio.to_thread(
-                ai_engine.generate_reply,
-                recent_history,
-                long_term_context,
-                text,
-                requested_tone,
-                language,
-            )
-            tone = requested_tone
-
-    explanation = _format_explanation_from_analysis(analysis)
-
+    lang_label = SUPPORTED_LANGUAGES.get(language, language)
+    tone_label = requested_tone or prefs.get("preferred_tone") or "auto"
     results = [
         InlineQueryResultArticle(
             id=str(uuid.uuid4()),
-            title=f"💬 Suggested Reply ({tone})",
+            title=f"💬 Suggested Reply ({tone_label}, {lang_label})",
             description=reply[:100],
             input_message_content=InputTextMessageContent(reply),
-        ),
-        InlineQueryResultArticle(
-            id=str(uuid.uuid4()),
-            title="🔍 Explain First",
-            description="Understand the message before replying",
-            input_message_content=InputTextMessageContent(
-                explanation,
-                parse_mode="Markdown",
-            ),
         ),
     ]
 

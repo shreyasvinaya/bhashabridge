@@ -68,7 +68,9 @@ def _clean_json_response(text: str) -> str:
 
 def _analysis_cache_key(recent_history: str, long_term_context: str, target_message: str) -> str:
     """Build stable cache key for analysis requests."""
-    return "\n||\n".join([recent_history.strip(), long_term_context.strip(), target_message.strip()])
+    return "\n||\n".join(
+        [recent_history.strip(), long_term_context.strip(), target_message.strip()]
+    )
 
 
 def analyze_message(
@@ -369,6 +371,7 @@ TASK: Generate a natural, contextually appropriate reply to this message.
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
+                max_output_tokens=150,
             ),
         )
         return response.text.strip()
@@ -415,6 +418,51 @@ TASK: Translate the above text to {target_language}.
 
     except Exception:
         return "⚠️ Couldn't translate. Try again!"
+
+
+def summarize_chat_context(messages_text: str) -> str:
+    """Produce a concise 4-5 line summary of recent chat messages.
+
+    Used by the 'explain' command when no specific message is given.
+
+    Args:
+        messages_text: Formatted conversation text (user: message per line).
+
+    Returns:
+        A 4-5 line Markdown-formatted summary of the conversation.
+    """
+    if client is None:
+        return "⚠️ Gemini API key not configured. Please set GEMINI_API_KEY in .env"
+
+    try:
+        prompt = f"""[CONVERSATION]
+{messages_text}
+
+TASK: Summarize this conversation in exactly 4-5 lines. Include:
+- **What's being discussed** (main topic/topics)
+- **Who's saying what** (key participants and their positions)
+- **The overall vibe/tone** (friendly banter, heated argument, casual chat, etc.)
+- **Any slang or code-mixed terms** used and what they mean
+- **Language(s) used** in the conversation
+
+Format the summary in Markdown with emoji for readability. Be concise but informative.
+Do NOT just list out the messages — provide an actual summary."""
+
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                max_output_tokens=400,
+            ),
+        )
+        return response.text.strip()
+
+    except Exception as e:
+        import logging
+
+        logging.getLogger(__name__).error(f"summarize_chat_context failed: {e}", exc_info=True)
+        return "⚠️ Couldn't summarize the conversation. Try again!"
 
 
 def summarize_conversation(messages_text: str) -> dict:
