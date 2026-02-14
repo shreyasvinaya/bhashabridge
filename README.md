@@ -1,7 +1,7 @@
 # 🌉 BhashaBridge
 > **Don't just translate words. Understand the vibe.**
 
-[![Gemini 3.0 Flash](https://img.shields.io/badge/Powered%20By-Gemini%202.0%20Flash-blue)](https://deepmind.google/technologies/gemini/)
+[![Gemini 3.0 Flash](https://img.shields.io/badge/Powered%20By-Gemini%203.0%20Flash-blue)](https://deepmind.google/technologies/gemini/)
 [![Telegram](https://img.shields.io/badge/Platform-Telegram%20Inline-2CA5E0)](https://telegram.org/)
 [![Hackathon](https://img.shields.io/badge/Event-Gemini%203%20Bengaluru-orange)](https://ai.google.dev/)
 
