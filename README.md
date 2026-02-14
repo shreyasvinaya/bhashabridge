@@ -1,4 +1,4 @@
-# BhashaBridge — Implementation Plan for Claude Code
+# BhashaBridge 
 
 > **Tagline:** Don't just translate words. Understand the vibe.
 > **Event:** Gemini 3 Bengaluru Hackathon
@@ -6,7 +6,7 @@
 
 ---
 
-## 0. Prerequisites (Human Setup — Do Before Running Claude Code)
+## 0. Prerequisites (Human Setup)
 
 1. Create a Telegram bot via [@BotFather](https://t.me/BotFather). Note the **bot token**.
 2. **Enable inline mode** for the bot: send `/setinline` to @BotFather, select your bot, and set a placeholder like `Type to explain, translate, or reply…`.
