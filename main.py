@@ -96,36 +96,6 @@ RECOGNIZED_TONES = {
 }
 
 
-def _format_conversation_explanation(analysis: dict) -> str:
-    """Format explanation output from analyze_conversation response."""
-    summary = (analysis.get("summary") or "").strip() or "—"
-    languages = analysis.get("detected_languages") or []
-    lang_str = ", ".join(languages) if languages else "Unknown"
-    vibe = (analysis.get("vibe") or "").strip() or "—"
-    tone = (analysis.get("tone") or "").strip() or "casual"
-    slang = analysis.get("slang") or {}
-    translations = (analysis.get("translations") or "").strip() or "—"
-
-    lines = [
-        f"**📋 Summary:** {summary}",
-        f"**🌐 Languages:** {lang_str}",
-        f"**🎭 Vibe Check:** {vibe}",
-        f"**🎵 Tone:** {tone}",
-        "",
-        "**🗣️ Translations:**",
-        translations,
-        "",
-        "**📖 Slang Glossary:**",
-    ]
-
-    if slang:
-        for term, meaning in slang.items():
-            lines.append(f"- {term}: {meaning}")
-    else:
-        lines.append("- (none)")
-
-    return "\n".join(lines)
-
 
 def _format_explanation_from_analysis(analysis: dict, translated_text: str | None = None) -> str:
     """Format explanation output from analyze_message response."""
@@ -373,7 +343,7 @@ async def inline_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     try:
         if command == "explain":
-            await _handle_explain(update, chat_id, args)
+            await _handle_explain(update, chat_id, user_id, args)
         elif command == "explaintranslate":
             await _handle_explaintranslate(update, chat_id, user_id, args)
         elif command == "reply":
@@ -401,10 +371,10 @@ async def inline_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.warning("Could not send error result — inline query already expired.")
 
 
-async def _handle_explain(update: Update, chat_id: int | None, text: str) -> None:
+async def _handle_explain(update: Update, chat_id: int | None, user_id: int, text: str) -> None:
     """Handle 'explain' inline command."""
     if not text:
-        # If no text provided, explain the last 10 messages as a conversation
+        # If no text provided, summarize the last 10 messages
         recent = memory.get_recent_messages(chat_id, n=10) if chat_id else []
         if not recent:
             results = [
@@ -420,19 +390,22 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
             await update.inline_query.answer(results, cache_time=0, is_personal=True)
             return
 
-        # Combine last 10 messages and use conversation-level analysis
+        # Get user's preferred language
+        prefs = long_memory.load_user_prefs(user_id)
+        language = prefs.get("preferred_language", "english")
+
+        # Combine last 10 messages and get a 2-line summary
         conversation_text = "\n".join(f"{m['user']}: {m['text']}" for m in recent)
-        analysis = await asyncio.to_thread(
-            ai_engine.analyze_conversation, conversation_text
+        summary = await asyncio.to_thread(
+            ai_engine.analyze_conversation, conversation_text, language
         )
-        explanation = _format_conversation_explanation(analysis)
 
         results = [
             InlineQueryResultArticle(
                 id=str(uuid.uuid4()),
-                title="🔍 Conversation Explained",
-                description=explanation[:100] + "...",
-                input_message_content=InputTextMessageContent(explanation, parse_mode="Markdown"),
+                title="📋 Chat Summary",
+                description=summary[:100],
+                input_message_content=InputTextMessageContent(summary),
             )
         ]
         await update.inline_query.answer(results, cache_time=0, is_personal=True)

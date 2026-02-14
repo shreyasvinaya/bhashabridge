@@ -212,82 +212,45 @@ Rules:
 
 def analyze_conversation(
     conversation_text: str,
-) -> dict:
-    """Analyze a multi-message conversation and produce a rich explanation.
-
-    Unlike analyze_message (which targets a single message), this function
-    takes the last N messages and asks Gemini to explain the overall
-    conversation: what people are talking about, the languages/slang used,
-    the vibe, and notable code-mixed terms.
+    language: str = "english",
+) -> str:
+    """Summarize a multi-message conversation in 2 lines.
 
     Args:
         conversation_text: Formatted multi-line string of recent messages
             (e.g. "Alice: kya scene hai\nBob: chill maadi").
+        language: The language to write the summary in (e.g. "english",
+            "hindi", "kannada").
 
     Returns:
-        Dictionary with:
-        - summary: A concise English summary of what the conversation is about.
-        - detected_languages: List of languages/mixes detected.
-        - vibe: Overall conversational vibe.
-        - tone: Predominant tone.
-        - slang: Dict of slang/code-mixed terms and their meanings.
-        - translations: The full conversation translated to English.
+        A short 2-line summary string in the requested language.
     """
     if client is None:
-        return {
-            "summary": conversation_text,
-            "detected_languages": ["Unknown"],
-            "vibe": "",
-            "tone": "casual",
-            "slang": {},
-            "translations": conversation_text,
-        }
+        return "(AI unavailable — could not summarize.)"
 
     try:
         prompt = f"""[CONVERSATION]
 {conversation_text}
 
-TASK: You are given a multi-message conversation from a group chat. Analyze the ENTIRE conversation and return a JSON object (no markdown fencing) with this exact schema:
-{{
-  "summary": "<A concise 2-4 sentence English summary of what the conversation is about, what people are discussing, and the overall context>",
-  "detected_languages": ["<list of languages or mixes detected across all messages, e.g. 'Kanglish', 'Hinglish', 'English'>"],
-  "vibe": "<Overall vibe of the conversation — is it friendly banter? heated argument? planning something? casual chitchat? Explain in 1-2 sentences>",
-  "tone": "<predominant tone across the conversation: casual, sarcastic, formal, angry, playful, affectionate, frustrated, humorous, urgent, etc.>",
-  "slang": {{
-    "<term1>": "<definition>",
-    "<term2>": "<definition>"
-  }},
-  "translations": "<The full conversation translated line-by-line to English, preserving the 'User: message' format>"
-}}
-
-Rules:
-- "summary" should help someone who doesn't understand the languages used to quickly grasp what's being discussed.
-- "slang" should contain ALL non-English, code-mixed, or culturally specific terms with clear definitions. Empty object {{}} if none.
-- "translations" should be a line-by-line English translation of every message.
-- Focus on explaining cultural nuances, slang, and code-mixed expressions."""
+TASK: Summarize the above conversation in exactly 2 short sentences in {language}.
+- Capture the key topic being discussed and the overall sentiment/mood.
+- If any slang or code-mixed terms are important to understanding, briefly clarify them inline.
+- Output ONLY the 2-sentence summary, nothing else."""
 
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
-                max_output_tokens=900,
+                max_output_tokens=200,
             ),
         )
-        cleaned_text = _clean_json_response(response.text)
-        return json.loads(cleaned_text)
+        return response.text.strip()
 
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(f"analyze_conversation failed: {e}", exc_info=True)
-        return {
-            "summary": conversation_text,
-            "detected_languages": ["Unknown"],
-            "vibe": "",
-            "tone": "casual",
-            "slang": {},
-            "translations": conversation_text,
-        }
+        return "(Could not summarize the conversation. Please try again.)"
 
 
 def explain_message(
