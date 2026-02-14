@@ -188,13 +188,11 @@ Rules:
 
         return parsed
 
-    except Exception as e:
-        # Log and return fallback on any error
-        import logging
-        logging.getLogger(__name__).error(f"analyze_message failed: {e}", exc_info=True)
+    except Exception:
+        # Return fallback on any error
         return {
-            "is_english": False,
-            "detected_language": "Unknown",
+            "is_english": True,
+            "detected_language": "English",
             "translation": target_message,
             "vibe": "",
             "tone": "casual",
@@ -209,6 +207,86 @@ Rules:
                 "casual": {"text": "", "language": "english"},
                 "formal": {"text": "", "language": "english"},
             },
+        }
+
+
+def analyze_conversation(
+    conversation_text: str,
+) -> dict:
+    """Analyze a multi-message conversation and produce a rich explanation.
+
+    Unlike analyze_message (which targets a single message), this function
+    takes the last N messages and asks Gemini to explain the overall
+    conversation: what people are talking about, the languages/slang used,
+    the vibe, and notable code-mixed terms.
+
+    Args:
+        conversation_text: Formatted multi-line string of recent messages
+            (e.g. "Alice: kya scene hai\nBob: chill maadi").
+
+    Returns:
+        Dictionary with:
+        - summary: A concise English summary of what the conversation is about.
+        - detected_languages: List of languages/mixes detected.
+        - vibe: Overall conversational vibe.
+        - tone: Predominant tone.
+        - slang: Dict of slang/code-mixed terms and their meanings.
+        - translations: The full conversation translated to English.
+    """
+    if client is None:
+        return {
+            "summary": conversation_text,
+            "detected_languages": ["Unknown"],
+            "vibe": "",
+            "tone": "casual",
+            "slang": {},
+            "translations": conversation_text,
+        }
+
+    try:
+        prompt = f"""[CONVERSATION]
+{conversation_text}
+
+TASK: You are given a multi-message conversation from a group chat. Analyze the ENTIRE conversation and return a JSON object (no markdown fencing) with this exact schema:
+{{
+  "summary": "<A concise 2-4 sentence English summary of what the conversation is about, what people are discussing, and the overall context>",
+  "detected_languages": ["<list of languages or mixes detected across all messages, e.g. 'Kanglish', 'Hinglish', 'English'>"],
+  "vibe": "<Overall vibe of the conversation — is it friendly banter? heated argument? planning something? casual chitchat? Explain in 1-2 sentences>",
+  "tone": "<predominant tone across the conversation: casual, sarcastic, formal, angry, playful, affectionate, frustrated, humorous, urgent, etc.>",
+  "slang": {{
+    "<term1>": "<definition>",
+    "<term2>": "<definition>"
+  }},
+  "translations": "<The full conversation translated line-by-line to English, preserving the 'User: message' format>"
+}}
+
+Rules:
+- "summary" should help someone who doesn't understand the languages used to quickly grasp what's being discussed.
+- "slang" should contain ALL non-English, code-mixed, or culturally specific terms with clear definitions. Empty object {{}} if none.
+- "translations" should be a line-by-line English translation of every message.
+- Focus on explaining cultural nuances, slang, and code-mixed expressions."""
+
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                max_output_tokens=900,
+            ),
+        )
+        cleaned_text = _clean_json_response(response.text)
+        return json.loads(cleaned_text)
+
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"analyze_conversation failed: {e}", exc_info=True)
+        return {
+            "summary": conversation_text,
+            "detected_languages": ["Unknown"],
+            "vibe": "",
+            "tone": "casual",
+            "slang": {},
+            "translations": conversation_text,
         }
 
 
@@ -246,9 +324,8 @@ def explain_message(
 
 TASK: Explain this message for someone who doesn't understand the code-mixed language.
 - If the message is plain standard English with no slang or code-mixing, respond with exactly: NO_CONTEXT
-- Keep it short. Max 2-3 lines. No long paragraphs.
 - Otherwise provide:
-  **🗣️ Translation:** <one line meaning in {target_language}>
+  **🗣️ Translation:** <literal English meaning>
   **🎭 Vibe Check:** <cultural context — sarcasm? affection? frustration? humor?>
   **📖 Slang Glossary:**
   - <term>: <definition>"""
@@ -303,11 +380,11 @@ def explain_with_translate(
 TASK: Explain this message for someone who doesn't understand the code-mixed language.
 Deliver the ENTIRE explanation in {target_language}.
 - If the message is plain standard English with no slang or code-mixing, respond with exactly: NO_CONTEXT
-- Otherwise provide briefly (all in {target_language}):
-  **Translation:** <one line meaning in {target_language}>
-  **Vibe Check:** <cultural context — sarcasm? affection? frustration? humor?>
-  **Tone:** <detected tone of the message, e.g. casual, sarcastic, formal, angry, playful>
-  **Slang Glossary:**
+- Otherwise provide (all in {target_language}):
+  **🗣️ Translation:** <meaning of the message in {target_language}>
+  **🎭 Vibe Check:** <cultural context — sarcasm? affection? frustration? humor?>
+  **🎵 Tone:** <detected tone of the message, e.g. casual, sarcastic, formal, angry, playful>
+  **📖 Slang Glossary:**
   - <term>: <definition in {target_language}>"""
 
         response = client.models.generate_content(

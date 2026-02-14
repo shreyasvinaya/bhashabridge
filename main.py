@@ -96,6 +96,37 @@ RECOGNIZED_TONES = {
 }
 
 
+def _format_conversation_explanation(analysis: dict) -> str:
+    """Format explanation output from analyze_conversation response."""
+    summary = (analysis.get("summary") or "").strip() or "—"
+    languages = analysis.get("detected_languages") or []
+    lang_str = ", ".join(languages) if languages else "Unknown"
+    vibe = (analysis.get("vibe") or "").strip() or "—"
+    tone = (analysis.get("tone") or "").strip() or "casual"
+    slang = analysis.get("slang") or {}
+    translations = (analysis.get("translations") or "").strip() or "—"
+
+    lines = [
+        f"**📋 Summary:** {summary}",
+        f"**🌐 Languages:** {lang_str}",
+        f"**🎭 Vibe Check:** {vibe}",
+        f"**🎵 Tone:** {tone}",
+        "",
+        "**🗣️ Translations:**",
+        translations,
+        "",
+        "**📖 Slang Glossary:**",
+    ]
+
+    if slang:
+        for term, meaning in slang.items():
+            lines.append(f"- {term}: {meaning}")
+    else:
+        lines.append("- (none)")
+
+    return "\n".join(lines)
+
+
 def _format_explanation_from_analysis(analysis: dict, translated_text: str | None = None) -> str:
     """Format explanation output from analyze_message response."""
     translation = (
@@ -372,10 +403,8 @@ async def inline_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def _handle_explain(update: Update, chat_id: int | None, text: str) -> None:
     """Handle 'explain' inline command."""
-    user_provided_text = bool(text)  # True if user typed explicit text after 'explain'
-
     if not text:
-        # If no text provided, explain the last 10 messages
+        # If no text provided, explain the last 10 messages as a conversation
         recent = memory.get_recent_messages(chat_id, n=10) if chat_id else []
         if not recent:
             results = [
@@ -390,23 +419,36 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
             ]
             await update.inline_query.answer(results, cache_time=0, is_personal=True)
             return
-        # Combine last 10 messages as context for the analysis
-        text = "\n".join(f"{m['user']}: {m['text']}" for m in recent)
 
-    # Get context (empty if no chat context)
+        # Combine last 10 messages and use conversation-level analysis
+        conversation_text = "\n".join(f"{m['user']}: {m['text']}" for m in recent)
+        analysis = await asyncio.to_thread(
+            ai_engine.analyze_conversation, conversation_text
+        )
+        explanation = _format_conversation_explanation(analysis)
+
+        results = [
+            InlineQueryResultArticle(
+                id=str(uuid.uuid4()),
+                title="🔍 Conversation Explained",
+                description=explanation[:100] + "...",
+                input_message_content=InputTextMessageContent(explanation, parse_mode="Markdown"),
+            )
+        ]
+        await update.inline_query.answer(results, cache_time=0, is_personal=True)
+        return
+
+    # User provided explicit text — analyze as a single message
     recent_history = memory.get_history_text(chat_id, n=10) if chat_id else ""
-    # long_term_context = memory_retriever.retrieve_relevant_context(chat_id, text) if chat_id else ""
     long_term_context = ""
 
-    # Single AI call (faster than multiple chained calls)
     analysis = await asyncio.to_thread(
         ai_engine.analyze_message, recent_history, long_term_context, text
     )
     explanation = _format_explanation_from_analysis(analysis)
 
-    # Only show "Plain English" when user provided a single explicit message
-    # and Gemini confirmed it's plain English. Never skip when using chat context.
-    if user_provided_text and analysis.get("is_english") is True:
+    # Show "Plain English" only when Gemini confirms it's plain English
+    if analysis.get("is_english") is True:
         results = [
             InlineQueryResultArticle(
                 id=str(uuid.uuid4()),
@@ -418,13 +460,12 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
             )
         ]
     else:
-        # Store as notable message (extract info from explanation)
         if chat_id is not None:
             long_memory.add_notable_message(
                 chat_id,
                 "User",
                 text,
-                explanation[:200],  # Truncate for storage
+                explanation[:200],
                 analysis.get("detected_language", "Unknown"),
             )
 
