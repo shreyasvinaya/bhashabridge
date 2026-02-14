@@ -101,9 +101,11 @@ def _format_explanation_from_analysis(analysis: dict, translated_text: str | Non
     if analysis.get("is_english") is True:
         return "NO_CONTEXT"
 
-    translation = translated_text or analysis.get("translation") or analysis.get(
-        "translations", {}
-    ).get("english", "")
+    translation = (
+        translated_text
+        or analysis.get("translation")
+        or analysis.get("translations", {}).get("english", "")
+    )
     vibe = (analysis.get("vibe") or "").strip() or "—"
     tone = (analysis.get("tone") or "").strip() or "casual"
     slang = analysis.get("slang") or {}
@@ -319,9 +321,23 @@ async def inline_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not chat_id:
         logger.info(f"No chat context for user {user_id}, proceeding without history.")
 
+    # Recognized commands
+    valid_commands = {"explain", "explaintranslate", "reply", "translate"}
+
     # Parse query into command and arguments
     parts = query.split(maxsplit=1)
-    command = parts[0].lower() if parts else "explain"
+    if not parts:
+        await update.inline_query.answer([], cache_time=0)
+        return
+
+    command = parts[0].lower()
+
+    # Strict command check
+    if command not in valid_commands:
+        # Ignore invalid/partial commands
+        await update.inline_query.answer([], cache_time=0)
+        return
+
     args = parts[1] if len(parts) > 1 else ""
 
     try:
@@ -333,9 +349,6 @@ async def inline_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await _handle_reply(update, chat_id, user_id, args)
         elif command == "translate":
             await _handle_translate(update, user_id, args)
-        else:
-            # Default to explain
-            await _handle_explain(update, chat_id, query)
     except BadRequest as e:
         # Telegram inline query expired (>10s) — log and move on
         logger.warning(f"Inline query expired before we could answer: {e}")
