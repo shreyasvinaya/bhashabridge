@@ -168,15 +168,16 @@ async def maybe_summarize(chat_id: int) -> None:
     if message_counters[chat_id] >= SUMMARY_TRIGGER:
         history = memory.get_history_text(chat_id, n=20)
         if history:
-            result = ai_engine.summarize_conversation(history)
-            messages = memory.get_recent_messages(chat_id, n=20)
-            participants = list({m["user"] for m in messages})
-            long_memory.add_summary(
-                chat_id,
-                result["summary"],
-                result["key_terms"],
-                result.get("participants", participants),
-            )
+            logger.debug("Summarization disabled: Skipping long-term memory storage.")
+            # result = ai_engine.summarize_conversation(history)
+            # messages = memory.get_recent_messages(chat_id, n=20)
+            # participants = list({m["user"] for m in messages})
+            # long_memory.add_summary(
+            #     chat_id,
+            #     result["summary"],
+            #     result["key_terms"],
+            #     result.get("participants", participants),
+            # )
         message_counters[chat_id] = 0
 
 
@@ -392,7 +393,8 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
 
     # Get context (empty if no chat context)
     recent_history = memory.get_history_text(chat_id, n=6) if chat_id else ""
-    long_term_context = memory_retriever.retrieve_relevant_context(chat_id, text) if chat_id else ""
+    # long_term_context = memory_retriever.retrieve_relevant_context(chat_id, text) if chat_id else ""
+    long_term_context = ""
 
     # Single AI call (faster than multiple chained calls)
     analysis = await asyncio.to_thread(
@@ -465,7 +467,8 @@ async def _handle_explaintranslate(
 
     # Get context (empty if no chat context)
     recent_history = memory.get_history_text(chat_id, n=6) if chat_id else ""
-    long_term_context = memory_retriever.retrieve_relevant_context(chat_id, text) if chat_id else ""
+    # long_term_context = memory_retriever.retrieve_relevant_context(chat_id, text) if chat_id else ""
+    long_term_context = ""
 
     # Single AI call and reuse returned fields
     analysis = await asyncio.to_thread(
@@ -546,7 +549,8 @@ async def _handle_reply(update: Update, chat_id: int | None, user_id: int, args:
 
     # Get context (empty if no chat context)
     recent_history = memory.get_history_text(chat_id, n=6) if chat_id else ""
-    long_term_context = memory_retriever.retrieve_relevant_context(chat_id, text) if chat_id else ""
+    # long_term_context = memory_retriever.retrieve_relevant_context(chat_id, text) if chat_id else ""
+    long_term_context = ""
 
     # Single AI call and reuse everything
     analysis = await asyncio.to_thread(
