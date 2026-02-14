@@ -96,6 +96,64 @@ RECOGNIZED_TONES = {
 }
 
 
+def _format_explanation_from_analysis(analysis: dict, translated_text: str | None = None) -> str:
+    """Format explanation output from analyze_message response."""
+    if analysis.get("is_english") is True:
+        return "NO_CONTEXT"
+
+    translation = translated_text or analysis.get("translation") or analysis.get(
+        "translations", {}
+    ).get("english", "")
+    vibe = (analysis.get("vibe") or "").strip() or "—"
+    tone = (analysis.get("tone") or "").strip() or "casual"
+    slang = analysis.get("slang") or {}
+
+    lines = [
+        f"**🗣️ Translation:** {translation}",
+        f"**🎭 Vibe Check:** {vibe}",
+        f"**🎵 Tone:** {tone}",
+        "**📖 Slang Glossary:**",
+    ]
+
+    if slang:
+        for term, meaning in slang.items():
+            lines.append(f"- {term}: {meaning}")
+    else:
+        lines.append("- (none)")
+
+    return "\n".join(lines)
+
+
+def _reply_from_analysis(analysis: dict, requested_tone: str | None = None) -> tuple[str, str]:
+    """Pick best reply from analyze_message output.
+
+    Returns:
+        tuple(reply_text, tone_used)
+    """
+    suggested = analysis.get("suggested_replies", {}) or {}
+
+    if requested_tone == "casual":
+        casual = suggested.get("casual", {})
+        text = casual.get("text", "").strip()
+        if text:
+            return text, "casual"
+
+    if requested_tone == "formal":
+        formal = suggested.get("formal", {})
+        text = formal.get("text", "").strip()
+        if text:
+            return text, "formal"
+
+    matching = suggested.get("matching_tone", {})
+    text = (matching.get("text") or "").strip()
+    tone_used = (matching.get("tone") or analysis.get("tone") or "casual").strip()
+    if text:
+        return text, tone_used
+
+    fallback = analysis.get("translation") or "Got it."
+    return fallback, tone_used
+
+
 async def maybe_summarize(chat_id: int) -> None:
     """Summarize conversation to long-term memory if threshold reached.
 
@@ -320,13 +378,14 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
         text = recent[0]["text"]
 
     # Get context (empty if no chat context)
-    recent_history = memory.get_history_text(chat_id, n=10) if chat_id else ""
+    recent_history = memory.get_history_text(chat_id, n=6) if chat_id else ""
     long_term_context = memory_retriever.retrieve_relevant_context(chat_id, text) if chat_id else ""
 
-    # Call AI engine (off the event loop to avoid blocking)
-    explanation = await asyncio.to_thread(
-        ai_engine.explain_message, recent_history, long_term_context, text
+    # Single AI call (faster than multiple chained calls)
+    analysis = await asyncio.to_thread(
+        ai_engine.analyze_message, recent_history, long_term_context, text
     )
+    explanation = _format_explanation_from_analysis(analysis)
 
     if "NO_CONTEXT" in explanation:
         results = [
@@ -341,13 +400,14 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
         ]
     else:
         # Store as notable message (extract info from explanation)
-        long_memory.add_notable_message(
-            chat_id,
-            "User",
-            text,
-            explanation[:200],  # Truncate for storage
-            "Unknown",
-        )
+        if chat_id is not None:
+            long_memory.add_notable_message(
+                chat_id,
+                "User",
+                text,
+                explanation[:200],  # Truncate for storage
+                analysis.get("detected_language", "Unknown"),
+            )
 
         results = [
             InlineQueryResultArticle(
@@ -391,13 +451,17 @@ async def _handle_explaintranslate(
         target_lang = prefs.get("preferred_language", "english")
 
     # Get context (empty if no chat context)
-    recent_history = memory.get_history_text(chat_id, n=10) if chat_id else ""
+    recent_history = memory.get_history_text(chat_id, n=6) if chat_id else ""
     long_term_context = memory_retriever.retrieve_relevant_context(chat_id, text) if chat_id else ""
 
-    # Get explanation in target language (off event loop)
-    explanation = await asyncio.to_thread(
-        ai_engine.explain_with_translate, recent_history, long_term_context, text, target_lang
+    # Single AI call and reuse returned fields
+    analysis = await asyncio.to_thread(
+        ai_engine.analyze_message, recent_history, long_term_context, text
     )
+    translated_text = (analysis.get("translations") or {}).get(target_lang) or analysis.get(
+        "translation", ""
+    )
+    explanation = _format_explanation_from_analysis(analysis, translated_text=translated_text)
 
     if "NO_CONTEXT" in explanation:
         results = [
@@ -420,11 +484,8 @@ async def _handle_explaintranslate(
             )
         ]
 
-        # Also add a reply suggestion (off event loop)
-        tone = await asyncio.to_thread(ai_engine.detect_tone, recent_history, text)
-        reply = await asyncio.to_thread(
-            ai_engine.generate_reply, recent_history, long_term_context, text, tone, target_lang
-        )
+        # Reuse precomputed reply from analysis (no extra AI call)
+        reply, _ = _reply_from_analysis(analysis)
 
         results.append(
             InlineQueryResultArticle(
@@ -459,37 +520,43 @@ async def _handle_reply(update: Update, chat_id: int | None, user_id: int, args:
     # Check if first word is a recognized tone
     maybe_tone = parts[0].lower()
     if maybe_tone in RECOGNIZED_TONES and len(parts) > 1:
-        tone = maybe_tone
+        requested_tone = maybe_tone
         text = parts[1]
     else:
-        # No tone specified, use default
+        # No explicit tone in query
         text = args
+        requested_tone = None
+
         # Check user preferences
         prefs = long_memory.load_user_prefs(user_id)
-        tone = prefs.get("preferred_tone")
-
-        if not tone:
-            # Auto-detect tone (off event loop)
-            recent_history = memory.get_history_text(chat_id, n=10) if chat_id else ""
-            tone = await asyncio.to_thread(ai_engine.detect_tone, recent_history, text)
+        requested_tone = prefs.get("preferred_tone")
 
     # Get context (empty if no chat context)
-    recent_history = memory.get_history_text(chat_id, n=10) if chat_id else ""
+    recent_history = memory.get_history_text(chat_id, n=6) if chat_id else ""
     long_term_context = memory_retriever.retrieve_relevant_context(chat_id, text) if chat_id else ""
 
-    # Get user's preferred language
-    prefs = long_memory.load_user_prefs(user_id)
-    language = prefs.get("preferred_language", "english")
-
-    # Generate reply (off event loop)
-    reply = await asyncio.to_thread(
-        ai_engine.generate_reply, recent_history, long_term_context, text, tone, language
+    # Single AI call and reuse everything
+    analysis = await asyncio.to_thread(
+        ai_engine.analyze_message, recent_history, long_term_context, text
     )
+    reply, tone = _reply_from_analysis(analysis, requested_tone=requested_tone)
 
-    # Generate explanation too (off event loop)
-    explanation = await asyncio.to_thread(
-        ai_engine.explain_message, recent_history, long_term_context, text
-    )
+    # Preserve custom-tone behavior with a second call only when needed
+    if requested_tone and requested_tone not in {"casual", "formal"}:
+        if requested_tone != (analysis.get("tone") or "").strip().lower():
+            prefs = long_memory.load_user_prefs(user_id)
+            language = prefs.get("preferred_language", "english")
+            reply = await asyncio.to_thread(
+                ai_engine.generate_reply,
+                recent_history,
+                long_term_context,
+                text,
+                requested_tone,
+                language,
+            )
+            tone = requested_tone
+
+    explanation = _format_explanation_from_analysis(analysis)
 
     results = [
         InlineQueryResultArticle(
