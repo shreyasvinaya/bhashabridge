@@ -98,9 +98,6 @@ RECOGNIZED_TONES = {
 
 def _format_explanation_from_analysis(analysis: dict, translated_text: str | None = None) -> str:
     """Format explanation output from analyze_message response."""
-    if analysis.get("is_english") is True:
-        return "NO_CONTEXT"
-
     translation = (
         translated_text
         or analysis.get("translation")
@@ -375,6 +372,8 @@ async def inline_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def _handle_explain(update: Update, chat_id: int | None, text: str) -> None:
     """Handle 'explain' inline command."""
+    user_provided_text = bool(text)  # True if user typed explicit text after 'explain'
+
     if not text:
         # If no text provided, explain the last 10 messages
         recent = memory.get_recent_messages(chat_id, n=10) if chat_id else []
@@ -405,7 +404,9 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
     )
     explanation = _format_explanation_from_analysis(analysis)
 
-    if "NO_CONTEXT" in explanation:
+    # Only show "Plain English" when user provided a single explicit message
+    # and Gemini confirmed it's plain English. Never skip when using chat context.
+    if user_provided_text and analysis.get("is_english") is True:
         results = [
             InlineQueryResultArticle(
                 id=str(uuid.uuid4()),
@@ -482,7 +483,7 @@ async def _handle_explaintranslate(
     )
     explanation = _format_explanation_from_analysis(analysis, translated_text=translated_text)
 
-    if "NO_CONTEXT" in explanation:
+    if analysis.get("is_english") is True:
         results = [
             InlineQueryResultArticle(
                 id=str(uuid.uuid4()),

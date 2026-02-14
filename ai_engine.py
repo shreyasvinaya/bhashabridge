@@ -188,11 +188,13 @@ Rules:
 
         return parsed
 
-    except Exception:
-        # Return fallback on any error
+    except Exception as e:
+        # Log and return fallback on any error
+        import logging
+        logging.getLogger(__name__).error(f"analyze_message failed: {e}", exc_info=True)
         return {
-            "is_english": True,
-            "detected_language": "English",
+            "is_english": False,
+            "detected_language": "Unknown",
             "translation": target_message,
             "vibe": "",
             "tone": "casual",
@@ -244,8 +246,9 @@ def explain_message(
 
 TASK: Explain this message for someone who doesn't understand the code-mixed language.
 - If the message is plain standard English with no slang or code-mixing, respond with exactly: NO_CONTEXT
+- Keep it short. Max 2-3 lines. No long paragraphs.
 - Otherwise provide:
-  **🗣️ Translation:** <literal English meaning>
+  **🗣️ Translation:** <one line meaning in {target_language}>
   **🎭 Vibe Check:** <cultural context — sarcasm? affection? frustration? humor?>
   **📖 Slang Glossary:**
   - <term>: <definition>"""
@@ -300,11 +303,11 @@ def explain_with_translate(
 TASK: Explain this message for someone who doesn't understand the code-mixed language.
 Deliver the ENTIRE explanation in {target_language}.
 - If the message is plain standard English with no slang or code-mixing, respond with exactly: NO_CONTEXT
-- Otherwise provide (all in {target_language}):
-  **🗣️ Translation:** <meaning of the message in {target_language}>
-  **🎭 Vibe Check:** <cultural context — sarcasm? affection? frustration? humor?>
-  **🎵 Tone:** <detected tone of the message, e.g. casual, sarcastic, formal, angry, playful>
-  **📖 Slang Glossary:**
+- Otherwise provide briefly (all in {target_language}):
+  **Translation:** <one line meaning in {target_language}>
+  **Vibe Check:** <cultural context — sarcasm? affection? frustration? humor?>
+  **Tone:** <detected tone of the message, e.g. casual, sarcastic, formal, angry, playful>
+  **Slang Glossary:**
   - <term>: <definition in {target_language}>"""
 
         response = client.models.generate_content(
