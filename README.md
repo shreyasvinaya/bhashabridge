@@ -641,19 +641,8 @@ Expected: prints `"🌉 BhashaBridge is live!"` and starts polling without error
 | **Multi-Language Translation** | `@Bot translate hindi/kannada/english <msg>` |
 | **Language Preference** | `/setlang` sets default language for replies and translations |
 | **Short-Term Memory** | Last 20 messages per chat in-memory sliding window |
-| **Long-Term Memory** | Conversation summaries + notable messages persisted in JSON files |
 | **Smart Retrieval** | Only relevant long-term memories are injected into prompts (keyword + recency scoring) |
 | **Auto-Summarization** | Every 20 messages, conversation is auto-summarized to long-term memory |
 | **Memory Management** | `/clear` resets both short-term and long-term memory |
 
 ---
-
-## 5. Demo Script (For Judges)
-
-1. **Setup:** Create Telegram group "Weekend Plans". Add the bot. Send a few messages back and forth in Kanglish/Hinglish.
-2. **Explain:** Type `@BhashaBridge explain Ayyo don't put scene da` → select the inline result → see cultural explanation privately.
-3. **Explain in Hindi:** Type `@BhashaBridge explaintranslate hindi Ayyo don't put scene da` → explanation fully in Hindi, with detected tone.
-4. **Auto-Reply:** Type `@BhashaBridge reply Ayyo don't put scene da` → bot suggests a casual reply → tap to send it.
-5. **Tone Override:** Type `@BhashaBridge reply formal Ayyo don't put scene da` → get a formal-toned reply.
-6. **Translate:** Type `@BhashaBridge translate kannada bro I'll be there in 10 minutes` → Kannada translation.
-7. **Long-Term Memory:** After 20+ messages, the bot creates a summary. Future explanations reference past context intelligently.
