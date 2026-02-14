@@ -10,6 +10,7 @@ import os
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from langfuse import observe
 
 # Load environment variables
 load_dotenv()
@@ -61,6 +62,7 @@ def _clean_json_response(text: str) -> str:
     return text.strip()
 
 
+@observe()
 def analyze_message(
     recent_history: str,
     long_term_context: str,
@@ -183,6 +185,7 @@ Rules:
         }
 
 
+@observe()
 def explain_message(
     recent_history: str,
     long_term_context: str,
@@ -207,7 +210,7 @@ def explain_message(
         return "⚠️ Gemini API key not configured. Please set GEMINI_API_KEY in .env"
 
     try:
-        prompt = f"""{long_term_context}
+        prompt = f"""
 
 [RECENT CHAT HISTORY]
 {recent_history}
@@ -222,7 +225,7 @@ TASK: Explain this message for someone who doesn't understand the code-mixed lan
   **🎭 Vibe Check:** <cultural context — sarcasm? affection? frustration? humor?>
   **📖 Slang Glossary:**
   - <term>: <definition>"""
-
+        print(prompt)
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=prompt,
@@ -230,12 +233,14 @@ TASK: Explain this message for someone who doesn't understand the code-mixed lan
                 system_instruction=SYSTEM_PROMPT,
             ),
         )
+        print(response.text)
         return response.text
 
     except Exception:
         return "⚠️ Couldn't process that. Try again!"
 
 
+@observe()
 def explain_with_translate(
     recent_history: str,
     long_term_context: str,
@@ -293,6 +298,7 @@ Deliver the ENTIRE explanation in {target_language}.
         return "⚠️ Couldn't process that. Try again!"
 
 
+@observe()
 def generate_reply(
     recent_history: str,
     long_term_context: str,
@@ -350,6 +356,7 @@ TASK: Generate a natural, contextually appropriate reply to this message.
         return "⚠️ Couldn't generate a reply. Try again!"
 
 
+@observe()
 def translate_message(text: str, target_language: str) -> str:
     """Translate text to the target language.
 
@@ -390,6 +397,7 @@ TASK: Translate the above text to {target_language}.
         return "⚠️ Couldn't translate. Try again!"
 
 
+@observe()
 def summarize_conversation(messages_text: str) -> dict:
     """Summarize a batch of conversation messages.
 
@@ -445,6 +453,7 @@ Respond in this exact JSON format (no markdown fencing):
         }
 
 
+@observe()
 def detect_tone(recent_history: str, target_message: str) -> str:
     """Detect the tone/mood of a message.
 

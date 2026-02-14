@@ -9,7 +9,9 @@ import asyncio
 import json
 import logging
 import os
+import time
 import uuid
+from contextlib import contextmanager
 
 from telegram import InlineQueryResultArticle, InputTextMessageContent, Update
 from telegram.error import BadRequest
@@ -30,9 +32,21 @@ import memory_retriever
 # Configure logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.DEBUG,
+    level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def log_execution_time(operation_name: str):
+    """Context manager to log execution time of an operation."""
+    start_time = time.time()
+    try:
+        yield
+    finally:
+        duration = time.time() - start_time
+        logger.info(f"⏱️ {operation_name} took {duration:.2f}s")
+
 
 # Constants
 SUPPORTED_LANGUAGES = {
@@ -247,26 +261,26 @@ async def inline_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     Parses inline query and routes to appropriate handler based on command.
     """
-    query = update.inline_query.query.strip()
-    user_id = update.effective_user.id
-
-    if not query:
-        # Empty query - could show help or recent queries
-        await update.inline_query.answer([], cache_time=0)
-        return
-
-    # Get user's chat context
-    chat_id = user_last_chat.get(user_id)
-
-    if not chat_id:
-        logger.info(f"No chat context for user {user_id}, proceeding without history.")
-
-    # Parse query into command and arguments
-    parts = query.split(maxsplit=1)
-    command = parts[0].lower() if parts else "explain"
-    args = parts[1] if len(parts) > 1 else ""
-
     try:
+        query = update.inline_query.query.strip()
+        user_id = update.effective_user.id
+
+        if not query:
+            # Empty query - could show help or recent queries
+            await update.inline_query.answer([], cache_time=0)
+            return
+
+        # Get user's chat context
+        chat_id = user_last_chat.get(user_id)
+
+        if not chat_id:
+            logger.info(f"No chat context for user {user_id}, proceeding without history.")
+
+        # Parse query into command and arguments
+        parts = query.split(maxsplit=1)
+        command = parts[0].lower() if parts else "explain"
+        args = parts[1] if len(parts) > 1 else ""
+
         if command == "explain":
             await _handle_explain(update, chat_id, args)
         elif command == "explaintranslate":
@@ -278,6 +292,7 @@ async def inline_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else:
             # Default to explain
             await _handle_explain(update, chat_id, query)
+
     except BadRequest as e:
         # Telegram inline query expired (>10s) — log and move on
         logger.warning(f"Inline query expired before we could answer: {e}")
@@ -324,9 +339,10 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
     long_term_context = memory_retriever.retrieve_relevant_context(chat_id, text) if chat_id else ""
 
     # Call AI engine (off the event loop to avoid blocking)
-    explanation = await asyncio.to_thread(
-        ai_engine.explain_message, recent_history, long_term_context, text
-    )
+    with log_execution_time("explain_message"):
+        explanation = await asyncio.to_thread(
+            ai_engine.explain_message, recent_history, long_term_context, text
+        )
 
     if "NO_CONTEXT" in explanation:
         results = [
@@ -395,9 +411,14 @@ async def _handle_explaintranslate(
     long_term_context = memory_retriever.retrieve_relevant_context(chat_id, text) if chat_id else ""
 
     # Get explanation in target language (off event loop)
-    explanation = await asyncio.to_thread(
-        ai_engine.explain_with_translate, recent_history, long_term_context, text, target_lang
-    )
+    with log_execution_time(f"explain_with_translate ({target_lang})"):
+        explanation = await asyncio.to_thread(
+            ai_engine.explain_with_translate,
+            recent_history,
+            long_term_context,
+            text,
+            target_lang,
+        )
 
     if "NO_CONTEXT" in explanation:
         results = [
@@ -421,10 +442,18 @@ async def _handle_explaintranslate(
         ]
 
         # Also add a reply suggestion (off event loop)
-        tone = await asyncio.to_thread(ai_engine.detect_tone, recent_history, text)
-        reply = await asyncio.to_thread(
-            ai_engine.generate_reply, recent_history, long_term_context, text, tone, target_lang
-        )
+        with log_execution_time("detect_tone"):
+            tone = await asyncio.to_thread(ai_engine.detect_tone, recent_history, text)
+
+        with log_execution_time(f"generate_reply ({tone})"):
+            reply = await asyncio.to_thread(
+                ai_engine.generate_reply,
+                recent_history,
+                long_term_context,
+                text,
+                tone,
+                target_lang,
+            )
 
         results.append(
             InlineQueryResultArticle(
@@ -471,7 +500,8 @@ async def _handle_reply(update: Update, chat_id: int | None, user_id: int, args:
         if not tone:
             # Auto-detect tone (off event loop)
             recent_history = memory.get_history_text(chat_id, n=10) if chat_id else ""
-            tone = await asyncio.to_thread(ai_engine.detect_tone, recent_history, text)
+            with log_execution_time("detect_tone"):
+                tone = await asyncio.to_thread(ai_engine.detect_tone, recent_history, text)
 
     # Get context (empty if no chat context)
     recent_history = memory.get_history_text(chat_id, n=10) if chat_id else ""
@@ -482,14 +512,16 @@ async def _handle_reply(update: Update, chat_id: int | None, user_id: int, args:
     language = prefs.get("preferred_language", "english")
 
     # Generate reply (off event loop)
-    reply = await asyncio.to_thread(
-        ai_engine.generate_reply, recent_history, long_term_context, text, tone, language
-    )
+    with log_execution_time(f"generate_reply ({tone})"):
+        reply = await asyncio.to_thread(
+            ai_engine.generate_reply, recent_history, long_term_context, text, tone, language
+        )
 
     # Generate explanation too (off event loop)
-    explanation = await asyncio.to_thread(
-        ai_engine.explain_message, recent_history, long_term_context, text
-    )
+    with log_execution_time("explain_message"):
+        explanation = await asyncio.to_thread(
+            ai_engine.explain_message, recent_history, long_term_context, text
+        )
 
     results = [
         InlineQueryResultArticle(
@@ -542,7 +574,8 @@ async def _handle_translate(update: Update, user_id: int, args: str) -> None:
         text = args
 
     # Translate (off event loop)
-    translation = await asyncio.to_thread(ai_engine.translate_message, text, target_lang)
+    with log_execution_time(f"translate_message ({target_lang})"):
+        translation = await asyncio.to_thread(ai_engine.translate_message, text, target_lang)
 
     results = [
         InlineQueryResultArticle(
