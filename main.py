@@ -375,7 +375,7 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
     user_provided_text = bool(text)  # True if user typed explicit text after 'explain'
 
     if not text:
-        # If no text provided, explain the latest message using last 10 messages as context
+        # No text provided — summarize the last 10 messages
         recent = memory.get_recent_messages(chat_id, n=10) if chat_id else []
         if not recent:
             results = [
@@ -390,12 +390,29 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
             ]
             await update.inline_query.answer(results, cache_time=0, is_personal=True)
             return
-        # Use the most recent message as the target to explain
-        text = recent[-1]["text"]
 
+        # Build conversation text from last 10 messages
+        conversation_text = "\n".join(f"{m['user']}: {m['text']}" for m in recent)
+
+        # Ask Gemini for a concise 4-5 line summary of the conversation
+        summary = await asyncio.to_thread(
+            ai_engine.summarize_chat_context, conversation_text
+        )
+
+        results = [
+            InlineQueryResultArticle(
+                id=str(uuid.uuid4()),
+                title="📋 Conversation Summary",
+                description=summary[:100] + "...",
+                input_message_content=InputTextMessageContent(summary, parse_mode="Markdown"),
+            )
+        ]
+        await update.inline_query.answer(results, cache_time=0, is_personal=True)
+        return
+
+    # User provided explicit text — explain that specific message
     # Get last 10 messages as conversation context for accurate interpretation
     recent_history = memory.get_history_text(chat_id, n=10) if chat_id else ""
-    # long_term_context = memory_retriever.retrieve_relevant_context(chat_id, text) if chat_id else ""
     long_term_context = ""
 
     # Single AI call (faster than multiple chained calls)
@@ -404,9 +421,8 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
     )
     explanation = _format_explanation_from_analysis(analysis)
 
-    # Only show "Plain English" when user provided a single explicit message
-    # and Gemini confirmed it's plain English. Never skip when using chat context.
-    if user_provided_text and analysis.get("is_english") is True:
+    # Show "Plain English" only when Gemini confirmed it's plain English
+    if analysis.get("is_english") is True:
         results = [
             InlineQueryResultArticle(
                 id=str(uuid.uuid4()),
@@ -418,13 +434,13 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
             )
         ]
     else:
-        # Store as notable message (extract info from explanation)
+        # Store as notable message
         if chat_id is not None:
             long_memory.add_notable_message(
                 chat_id,
                 "User",
                 text,
-                explanation[:200],  # Truncate for storage
+                explanation[:200],
                 analysis.get("detected_language", "Unknown"),
             )
 
@@ -559,25 +575,16 @@ async def _handle_reply(update: Update, chat_id: int | None, user_id: int, args:
     recent_history = memory.get_history_text(chat_id, n=10) if chat_id else ""
     long_term_context = ""
 
-    # Analyze the conversation to detect predominant tone and language
+    # Analyze the conversation to detect tone
     analysis = await asyncio.to_thread(
         ai_engine.analyze_message, recent_history, long_term_context, conversation_text
     )
     analyzed_tone = (analysis.get("tone") or "casual").strip().lower()
-    analyzed_language = (analysis.get("detected_language") or "english").strip().lower()
 
-    # Map detected language mixes to a base language for reply generation
-    if "hinglish" in analyzed_language or "hindi" in analyzed_language:
-        predominant_language = "hindi"
-    elif "kanglish" in analyzed_language or "kannada" in analyzed_language:
-        predominant_language = "kannada"
-    else:
-        predominant_language = "english"
-
-    # Apply overrides: user-specified > user-prefs > analyzed
+    # Always use user's preferred language from /setlang (default: english)
     prefs = long_memory.load_user_prefs(user_id)
     tone = requested_tone or prefs.get("preferred_tone") or analyzed_tone
-    language = requested_language or predominant_language
+    language = requested_language or prefs.get("preferred_language", "english")
 
     # Generate reply using resolved tone and language
     reply = await asyncio.to_thread(
