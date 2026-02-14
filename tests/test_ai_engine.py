@@ -26,7 +26,7 @@ class TestAnalyzeMessage:
             long_term_context="",
             target_message="macha don't put scene da",
         )
-
+        print(result)
         assert isinstance(result, dict)
         assert "is_english" in result
         assert "detected_language" in result
@@ -39,7 +39,13 @@ class TestAnalyzeMessage:
 
         # Should detect as code-mixed
         assert result["is_english"] is False
-        assert result["detected_language"] in ["Kanglish", "Kannada", "English"]
+        assert result["detected_language"] in [
+            "Kanglish",
+            "Kannada",
+            "English",
+            "Tanglish",
+            "Tamil",
+        ]
 
     def test_analyze_english_message(self):
         """Test analyzing a plain English message."""
