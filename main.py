@@ -395,9 +395,7 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
         conversation_text = "\n".join(f"{m['user']}: {m['text']}" for m in recent)
 
         # Ask Gemini for a concise 4-5 line summary of the conversation
-        summary = await asyncio.to_thread(
-            ai_engine.summarize_chat_context, conversation_text
-        )
+        summary = await asyncio.to_thread(ai_engine.summarize_chat_context, conversation_text)
 
         results = [
             InlineQueryResultArticle(
@@ -570,50 +568,34 @@ async def _handle_reply(update: Update, chat_id: int | None, user_id: int, args:
         await update.inline_query.answer(results, cache_time=0, is_personal=True)
         return
 
-    # Build conversation text from last 10 messages
+    # Build conversation context and isolate the last message as the target
     conversation_text = "\n".join(f"{m['user']}: {m['text']}" for m in recent)
-    recent_history = memory.get_history_text(chat_id, n=10) if chat_id else ""
+    last_message = f"{recent[-1]['user']}: {recent[-1]['text']}"
     long_term_context = ""
-
-    # Analyze the conversation to detect tone
-    analysis = await asyncio.to_thread(
-        ai_engine.analyze_message, recent_history, long_term_context, conversation_text
-    )
-    analyzed_tone = (analysis.get("tone") or "casual").strip().lower()
 
     # Always use user's preferred language from /setlang (default: english)
     prefs = long_memory.load_user_prefs(user_id)
-    tone = requested_tone or prefs.get("preferred_tone") or analyzed_tone
+    tone = requested_tone or prefs.get("preferred_tone") or "match the conversation's natural tone"
     language = requested_language or prefs.get("preferred_language", "english")
 
-    # Generate reply using resolved tone and language
+    # Single generate_reply call — fast and reliable
     reply = await asyncio.to_thread(
         ai_engine.generate_reply,
-        recent_history,
-        long_term_context,
         conversation_text,
+        long_term_context,
+        last_message,
         tone,
         language,
     )
 
-    explanation = _format_explanation_from_analysis(analysis)
-
     lang_label = SUPPORTED_LANGUAGES.get(language, language)
+    tone_label = requested_tone or prefs.get("preferred_tone") or "auto"
     results = [
         InlineQueryResultArticle(
             id=str(uuid.uuid4()),
-            title=f"💬 Suggested Reply ({tone}, {lang_label})",
+            title=f"💬 Suggested Reply ({tone_label}, {lang_label})",
             description=reply[:100],
             input_message_content=InputTextMessageContent(reply),
-        ),
-        InlineQueryResultArticle(
-            id=str(uuid.uuid4()),
-            title="🔍 Explain First",
-            description="Understand the conversation before replying",
-            input_message_content=InputTextMessageContent(
-                explanation,
-                parse_mode="Markdown",
-            ),
         ),
     ]
 

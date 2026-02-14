@@ -68,7 +68,9 @@ def _clean_json_response(text: str) -> str:
 
 def _analysis_cache_key(recent_history: str, long_term_context: str, target_message: str) -> str:
     """Build stable cache key for analysis requests."""
-    return "\n||\n".join([recent_history.strip(), long_term_context.strip(), target_message.strip()])
+    return "\n||\n".join(
+        [recent_history.strip(), long_term_context.strip(), target_message.strip()]
+    )
 
 
 def analyze_message(
@@ -369,6 +371,7 @@ TASK: Generate a natural, contextually appropriate reply to this message.
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
+                max_output_tokens=150,
             ),
         )
         return response.text.strip()
@@ -457,6 +460,7 @@ Do NOT just list out the messages — provide an actual summary."""
 
     except Exception as e:
         import logging
+
         logging.getLogger(__name__).error(f"summarize_chat_context failed: {e}", exc_info=True)
         return "⚠️ Couldn't summarize the conversation. Try again!"
 
