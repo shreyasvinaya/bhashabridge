@@ -16,6 +16,9 @@ from google.genai import types
 load_dotenv()
 
 # Configure Gemini API client
+# Use the Gemini Developer API (api key auth). Do NOT set vertexai=True — that
+# routes requests to Vertex AI (aiplatform.googleapis.com) which requires GCP
+# project/ADC setup and 403s with a plain Gemini API key.
 api_key = os.getenv("GEMINI_API_KEY")
 client = None
 if api_key:
@@ -23,6 +26,11 @@ if api_key:
 
 # Model name
 MODEL_NAME = "gemini-3-flash-preview"
+
+# gemini-3-flash is a "thinking" model. We use a LOW thinking level for fast
+# responses — these are short translation/explanation tasks that don't need deep
+# reasoning, and inline queries must answer before Telegram expires them.
+THINKING_CONFIG = types.ThinkingConfig(thinking_level="low")
 
 # In-memory cache for repeated inline requests (same user query often sent multiple times)
 ANALYSIS_CACHE_TTL_SECONDS = 45
@@ -173,7 +181,12 @@ Rules:
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
-                max_output_tokens=700,
+                # gemini-3-flash is a "thinking" model: reasoning tokens are
+                # drawn from this same budget before any output is produced.
+                # A small cap gets fully consumed by thinking, truncating the
+                # JSON and causing json.loads to fail. Give it ample headroom.
+                max_output_tokens=4096,
+                thinking_config=THINKING_CONFIG,
             ),
         )
         cleaned_text = _clean_json_response(response.text)
@@ -257,6 +270,7 @@ TASK: Explain this message for someone who doesn't understand the code-mixed lan
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
+                thinking_config=THINKING_CONFIG,
             ),
         )
         return response.text
@@ -314,6 +328,7 @@ Deliver the ENTIRE explanation in {target_language}.
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
+                thinking_config=THINKING_CONFIG,
             ),
         )
         return response.text
@@ -371,7 +386,9 @@ TASK: Generate a natural, contextually appropriate reply to this message.
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
-                max_output_tokens=150,
+                # Headroom for thinking tokens (see analyze_message note).
+                max_output_tokens=1024,
+                thinking_config=THINKING_CONFIG,
             ),
         )
         return response.text.strip()
@@ -412,6 +429,7 @@ TASK: Translate the above text to {target_language}.
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
+                thinking_config=THINKING_CONFIG,
             ),
         )
         return response.text.strip()
@@ -453,7 +471,9 @@ Do NOT just list out the messages — provide an actual summary."""
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
-                max_output_tokens=400,
+                # Headroom for thinking tokens (see analyze_message note).
+                max_output_tokens=2048,
+                thinking_config=THINKING_CONFIG,
             ),
         )
         return response.text.strip()
@@ -499,6 +519,7 @@ Respond in this exact JSON format (no markdown fencing):
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
+                thinking_config=THINKING_CONFIG,
             ),
         )
         cleaned_text = _clean_json_response(response.text)
@@ -554,6 +575,7 @@ Examples: casual, sarcastic, formal, angry, playful, affectionate, frustrated, h
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
+                thinking_config=THINKING_CONFIG,
             ),
         )
         return response.text.strip().lower()

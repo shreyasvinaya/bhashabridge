@@ -37,15 +37,15 @@ class TestAnalyzeMessage:
         assert "translations" in result
         assert "suggested_replies" in result
 
-        # Should detect as code-mixed
+        # Should detect as code-mixed. The model may return a combined label
+        # (e.g. "Kanglish/Tanglish"), so check for any expected language token
+        # rather than exact membership.
         assert result["is_english"] is False
-        assert result["detected_language"] in [
-            "Kanglish",
-            "Kannada",
-            "English",
-            "Tanglish",
-            "Tamil",
-        ]
+        detected = result["detected_language"].lower()
+        assert any(
+            lang in detected
+            for lang in ["kanglish", "kannada", "tanglish", "tamil", "hinglish", "hindi"]
+        )
 
     def test_analyze_english_message(self):
         """Test analyzing a plain English message."""
