@@ -22,27 +22,19 @@ def mock_context():
 
 
 @pytest.mark.asyncio
-async def test_partial_command_ignored(mock_update, mock_context):
-    """Test that partial command prefixes are ignored."""
-    # "expl" is a prefix of "explain", but not a valid command.
-    # Should result in NO result (empty list) or waiting.
-    # Current behavior (bug): defaults to 'explain' fallback and returns results.
-    # Desired behavior: returns empty list.
-
+async def test_partial_command_shows_filtered_menu(mock_update, mock_context):
+    """Partial command prefixes show a command menu filtered by the prefix."""
+    # "expl" is a prefix of both "explain" and "explaintranslate", so the menu
+    # offers those two options instead of silently returning nothing.
     mock_update.inline_query.query = "expl"
 
     await main.inline_handler(mock_update, mock_context)
 
-    # Verify behavior.
-    # If the bug exists, it calls answer with some results (length > 0)
-    # If fixed, it should call answer with [] (empty list)
-
     args, _ = mock_update.inline_query.answer.call_args
     results = args[0]
 
-    # For now, we expect this to FAIL (returns results) until we fix it.
-    # But for the test file itself, I'll write assertions for the DESIRED behavior.
-    assert len(results) == 0, "Should ignore partial command 'expl'"
+    assert len(results) == 2
+    assert all("Explain" in r.title for r in results)
 
 
 @pytest.mark.asyncio
@@ -56,22 +48,18 @@ async def test_full_command_processed(mock_update, mock_context):
 
 
 @pytest.mark.asyncio
-async def test_partial_command_with_space_processed(mock_update, mock_context):
-    """Test that partial command with space is processed as content."""
-    # "e " -> user finished typing "e". Should explain "e".
-
-
-async def test_partial_command_with_space_ignored(mock_update, mock_context):
-    """Test that partial command with space is ALSO ignored (user preference)."""
-    # "e " -> user finished typing "e", but "e" is a prefix of "explain".
-    # User requested to NOT explain "e".
+async def test_partial_command_with_space_shows_menu(mock_update, mock_context):
+    """A lone prefix token (even with a trailing space) shows the filtered menu."""
+    # "e " collapses to the single token "e", a prefix of "explain" and
+    # "explaintranslate", so the menu offers those two — it does not explain "e".
     mock_update.inline_query.query = "e "
 
     await main.inline_handler(mock_update, mock_context)
 
     args, _ = mock_update.inline_query.answer.call_args
     results = args[0]
-    assert len(results) == 0, "Should ignore 'e ' as it is a single-token prefix"
+    assert len(results) == 2
+    assert all("Explain" in r.title for r in results)
 
 
 @pytest.mark.asyncio
@@ -94,13 +82,14 @@ async def test_non_command_ignored(mock_update, mock_context):
 
 
 @pytest.mark.asyncio
-async def test_non_command_with_args_ignored(mock_update, mock_context):
-    """Test that non-commands with arguments are ignored."""
-    # "hello world" -> Should NOT explain "hello world".
+async def test_non_command_with_args_shows_full_menu(mock_update, mock_context):
+    """A non-command with arguments shows the full command menu (never explains it)."""
+    # "hello world" is not a command and has args, so no prefix filter applies —
+    # the user gets the full list of commands rather than an explanation of the text.
     mock_update.inline_query.query = "hello world"
 
     await main.inline_handler(mock_update, mock_context)
 
     args, _ = mock_update.inline_query.answer.call_args
     results = args[0]
-    assert len(results) == 0
+    assert len(results) == 4
