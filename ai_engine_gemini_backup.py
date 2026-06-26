@@ -1,8 +1,7 @@
 """AI Engine module for BhashaBridge.
 
-This module provides all LLM integrations including message analysis,
+This module provides all Gemini API integrations including message analysis,
 explanation, translation, reply generation, and conversation summarization.
-Uses Groq API with Llama 3.3 70B (128K context window).
 """
 
 import json
@@ -10,19 +9,20 @@ import os
 import time
 
 from dotenv import load_dotenv
-from groq import Groq
+from google import genai
+from google.genai import types
 
 # Load environment variables
 load_dotenv()
 
-# Configure Groq API client
-api_key = os.getenv("GROQ_API_KEY")
+# Configure Gemini API client
+api_key = os.getenv("GEMINI_API_KEY")
 client = None
 if api_key:
-    client = Groq(api_key=api_key)
+    client = genai.Client(vertexai=True, api_key=api_key)
 
-# Model name — Llama 3.3 70B on Groq (128K context, free tier available)
-MODEL_NAME = "llama-3.3-70b-versatile"
+# Model name
+MODEL_NAME = "gemini-3-flash-preview"
 
 # In-memory cache for repeated inline requests (same user query often sent multiple times)
 ANALYSIS_CACHE_TTL_SECONDS = 45
@@ -41,34 +41,6 @@ You have three capabilities:
 Always be concise (max 150 words per response). Use emoji sparingly.
 Never fabricate meanings — if unsure, say so.
 Consider chat history and past context for accurate interpretation."""
-
-
-def _call_llm(prompt: str, max_tokens: int = 700) -> str:
-    """Make a single LLM call via Groq API.
-
-    Args:
-        prompt: The user prompt to send.
-        max_tokens: Maximum output tokens.
-
-    Returns:
-        The raw response text.
-
-    Raises:
-        RuntimeError: If the API client is not configured.
-    """
-    if client is None:
-        raise RuntimeError("Groq API key not configured")
-
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        max_tokens=max_tokens,
-        temperature=0.7,
-    )
-    return response.choices[0].message.content
 
 
 def _clean_json_response(text: str) -> str:
@@ -194,11 +166,17 @@ Rules:
 - "slang" should only contain non-English or code-mixed terms. Empty object {{}} if none.
 - "suggested_replies.matching_tone" should mirror the language style of the original message.
 - Keep all replies short and natural (1-2 sentences max).
-- If is_english is true, still fill in all fields (translation = original, slang = {{}}, etc.).
-- Return ONLY valid JSON, no extra text."""
+- If is_english is true, still fill in all fields (translation = original, slang = {{}}, etc.)."""
 
-        raw = _call_llm(prompt, max_tokens=700)
-        cleaned_text = _clean_json_response(raw)
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                max_output_tokens=700,
+            ),
+        )
+        cleaned_text = _clean_json_response(response.text)
 
         parsed = json.loads(cleaned_text)
         _analysis_cache[cache_key] = (now, parsed)
@@ -255,7 +233,7 @@ def explain_message(
         True
     """
     if client is None:
-        return "⚠️ Groq API key not configured. Please set GROQ_API_KEY in .env"
+        return "⚠️ Gemini API key not configured. Please set GEMINI_API_KEY in .env"
 
     try:
         prompt = f"""{long_term_context}
@@ -274,7 +252,14 @@ TASK: Explain this message for someone who doesn't understand the code-mixed lan
   **📖 Slang Glossary:**
   - <term>: <definition>"""
 
-        return _call_llm(prompt)
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+            ),
+        )
+        return response.text
 
     except Exception:
         return "⚠️ Couldn't process that. Try again!"
@@ -303,7 +288,7 @@ def explain_with_translate(
         True
     """
     if client is None:
-        return "⚠️ Groq API key not configured. Please set GROQ_API_KEY in .env"
+        return "⚠️ Gemini API key not configured. Please set GEMINI_API_KEY in .env"
 
     try:
         prompt = f"""{long_term_context}
@@ -324,7 +309,14 @@ Deliver the ENTIRE explanation in {target_language}.
   **📖 Slang Glossary:**
   - <term>: <definition in {target_language}>"""
 
-        return _call_llm(prompt)
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+            ),
+        )
+        return response.text
 
     except Exception:
         return "⚠️ Couldn't process that. Try again!"
@@ -355,7 +347,7 @@ def generate_reply(
         True
     """
     if client is None:
-        return "⚠️ Groq API key not configured. Please set GROQ_API_KEY in .env"
+        return "⚠️ Gemini API key not configured. Please set GEMINI_API_KEY in .env"
 
     try:
         prompt = f"""{long_term_context}
@@ -374,7 +366,15 @@ TASK: Generate a natural, contextually appropriate reply to this message.
 - Keep it short and natural (1-2 sentences max).
 - Output ONLY the reply text, nothing else."""
 
-        return _call_llm(prompt, max_tokens=150).strip()
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                max_output_tokens=150,
+            ),
+        )
+        return response.text.strip()
 
     except Exception:
         return "⚠️ Couldn't generate a reply. Try again!"
@@ -395,7 +395,7 @@ def translate_message(text: str, target_language: str) -> str:
         '...'
     """
     if client is None:
-        return "⚠️ Groq API key not configured. Please set GROQ_API_KEY in .env"
+        return "⚠️ Gemini API key not configured. Please set GEMINI_API_KEY in .env"
 
     try:
         prompt = f"""[TEXT TO TRANSLATE]
@@ -407,7 +407,14 @@ TASK: Translate the above text to {target_language}.
 - If there are culturally specific terms, translate them naturally (not word-for-word).
 - Output ONLY the translated text, nothing else."""
 
-        return _call_llm(prompt).strip()
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+            ),
+        )
+        return response.text.strip()
 
     except Exception:
         return "⚠️ Couldn't translate. Try again!"
@@ -425,7 +432,7 @@ def summarize_chat_context(messages_text: str) -> str:
         A 4-5 line Markdown-formatted summary of the conversation.
     """
     if client is None:
-        return "⚠️ Groq API key not configured. Please set GROQ_API_KEY in .env"
+        return "⚠️ Gemini API key not configured. Please set GEMINI_API_KEY in .env"
 
     try:
         prompt = f"""[CONVERSATION]
@@ -441,7 +448,15 @@ TASK: Summarize this conversation in exactly 4-5 lines. Include:
 Format the summary in Markdown with emoji for readability. Be concise but informative.
 Do NOT just list out the messages — provide an actual summary."""
 
-        return _call_llm(prompt, max_tokens=400).strip()
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                max_output_tokens=400,
+            ),
+        )
+        return response.text.strip()
 
     except Exception as e:
         import logging
@@ -479,14 +494,21 @@ TASK: Summarize this conversation for long-term memory storage.
 Respond in this exact JSON format (no markdown fencing):
 {{"summary": "<2-3 sentence summary>", "key_terms": ["<slang/code-mixed terms used>"], "participants": ["<names of participants>"]}}"""
 
-        raw = _call_llm(prompt)
-        cleaned_text = _clean_json_response(raw)
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+            ),
+        )
+        cleaned_text = _clean_json_response(response.text)
 
         return json.loads(cleaned_text)
 
     except json.JSONDecodeError:
+        # Return fallback with raw text
         return {
-            "summary": "Could not summarize",
+            "summary": response.text[:200] if "response" in dir() else "Could not summarize",
             "key_terms": [],
             "participants": [],
         }
