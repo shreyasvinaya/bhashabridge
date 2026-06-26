@@ -11,7 +11,14 @@ import logging
 import os
 import uuid
 
-from telegram import BotCommand, InlineQueryResultArticle, InputTextMessageContent, Update
+from telegram import (
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
+    Update,
+)
 from telegram.error import BadRequest
 from telegram.ext import (
     Application,
@@ -346,6 +353,14 @@ def _build_command_menu(prefix: str = "") -> list[InlineQueryResultArticle]:
     for command, title, description, help_text in INLINE_COMMAND_OPTIONS:
         if prefix and not command.startswith(prefix):
             continue
+        # Use reply_markup with switch_inline_query_current_chat so clicking
+        # pre-fills the inline query with the command instead of sending a message
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(
+                text=f"Use: {command}",
+                switch_inline_query_current_chat=f"{command} ",
+            )]]
+        )
         results.append(
             InlineQueryResultArticle(
                 id=str(uuid.uuid4()),
@@ -354,6 +369,7 @@ def _build_command_menu(prefix: str = "") -> list[InlineQueryResultArticle]:
                 input_message_content=InputTextMessageContent(
                     f"ℹ️ BhashaBridge usage:\n{help_text}"
                 ),
+                reply_markup=keyboard,
             )
         )
     return results
@@ -454,15 +470,17 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
         # Build conversation text from last 10 messages
         conversation_text = "\n".join(f"{m['user']}: {m['text']}" for m in recent)
 
-        # Ask Gemini for a concise 4-5 line summary of the conversation
+        # Get a concise summary
         summary = await asyncio.to_thread(ai_engine.summarize_chat_context, conversation_text)
 
+        # Show summary in the dropdown (private to user).
+        # Tapping sends only a minimal note, not the full summary.
         results = [
             InlineQueryResultArticle(
                 id=str(uuid.uuid4()),
-                title="📋 Conversation Summary",
-                description=summary[:100] + "...",
-                input_message_content=InputTextMessageContent(summary, parse_mode="Markdown"),
+                title="📋 Conversation Summary (tap to dismiss)",
+                description=summary[:200],
+                input_message_content=InputTextMessageContent("🌉"),
             )
         ]
         await update.inline_query.answer(results, cache_time=0, is_personal=True)
@@ -479,16 +497,14 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
     )
     explanation = _format_explanation_from_analysis(analysis)
 
-    # Show "Plain English" only when Gemini confirmed it's plain English
+    # Show explanation privately in the dropdown — tapping does NOT send the explanation.
     if analysis.get("is_english") is True:
         results = [
             InlineQueryResultArticle(
                 id=str(uuid.uuid4()),
-                title="👍 Plain English",
+                title="👍 Plain English — no code-mixing detected",
                 description="That looks like plain English already!",
-                input_message_content=InputTextMessageContent(
-                    "That message appears to be plain English with no code-mixed content."
-                ),
+                input_message_content=InputTextMessageContent("🌉"),
             )
         ]
     else:
@@ -502,12 +518,19 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
                 analysis.get("detected_language", "Unknown"),
             )
 
+        # Show full explanation in description (user reads it inline, privately)
+        translation = analysis.get("translation", "")
+        vibe = analysis.get("vibe", "")
+        tone = analysis.get("tone", "")
+        slang = analysis.get("slang", {})
+        slang_str = ", ".join(f"{k}={v}" for k, v in slang.items()) if slang else "none"
+
         results = [
             InlineQueryResultArticle(
                 id=str(uuid.uuid4()),
-                title="🔍 Explanation",
-                description=explanation[:100] + "...",
-                input_message_content=InputTextMessageContent(explanation, parse_mode="Markdown"),
+                title=f"🗣️ {translation[:60]}",
+                description=f"🎭 {vibe[:80]} | 🎵 {tone} | Slang: {slang_str[:50]}",
+                input_message_content=InputTextMessageContent("🌉"),
             )
         ]
 
@@ -561,34 +584,38 @@ async def _handle_explaintranslate(
         results = [
             InlineQueryResultArticle(
                 id=str(uuid.uuid4()),
-                title="👍 Plain English",
+                title="👍 Plain English — no code-mixing detected",
                 description="That looks like plain English already!",
-                input_message_content=InputTextMessageContent(
-                    "That message appears to be plain English with no code-mixed content."
-                ),
+                input_message_content=InputTextMessageContent("🌉"),
             )
         ]
     else:
+        # Show explanation privately in dropdown; tapping sends only the reply
+        vibe = (analysis.get("vibe") or "").strip()
+        tone = (analysis.get("tone") or "").strip()
+
         results = [
             InlineQueryResultArticle(
                 id=str(uuid.uuid4()),
-                title=f"🌐 Explain in {SUPPORTED_LANGUAGES.get(target_lang, target_lang)}",
-                description=explanation[:100] + "...",
-                input_message_content=InputTextMessageContent(explanation, parse_mode="Markdown"),
+                title=f"🌐 {translated_text[:60]}",
+                description=f"🎭 {vibe[:80]} | 🎵 {tone}",
+                input_message_content=InputTextMessageContent("🌉"),
             )
         ]
 
         # Reuse precomputed reply from analysis (no extra AI call)
+        # This one DOES send — it's the reply action
         reply, _ = _reply_from_analysis(analysis)
 
-        results.append(
-            InlineQueryResultArticle(
-                id=str(uuid.uuid4()),
-                title=f"💬 Reply in {SUPPORTED_LANGUAGES.get(target_lang, target_lang)}",
-                description=reply[:100],
-                input_message_content=InputTextMessageContent(reply),
+        if reply:
+            results.append(
+                InlineQueryResultArticle(
+                    id=str(uuid.uuid4()),
+                    title=f"💬 Send reply in {SUPPORTED_LANGUAGES.get(target_lang, target_lang)}",
+                    description=reply[:100],
+                    input_message_content=InputTextMessageContent(reply),
+                )
             )
-        )
 
     await update.inline_query.answer(results, cache_time=0, is_personal=True)
 
