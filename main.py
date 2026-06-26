@@ -11,9 +11,10 @@ import logging
 import os
 import uuid
 
-from telegram import InlineQueryResultArticle, InputTextMessageContent, Update
+from telegram import BotCommand, InlineQueryResultArticle, InputTextMessageContent, Update
 from telegram.error import BadRequest
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
@@ -713,8 +714,18 @@ def main() -> None:
         logger.error("TELEGRAM_TOKEN not found in environment variables!")
         return
 
+    async def post_init(application: Application) -> None:
+        """Register bot commands with Telegram so they appear in the command menu."""
+        commands = [
+            BotCommand("start", "Show welcome message and usage instructions"),
+            BotCommand("setlang", "Set preferred language (english/hindi/kannada)"),
+            BotCommand("settone", "Set default reply tone (casual/formal/...)"),
+            BotCommand("clear", "Clear all memory and preferences"),
+        ]
+        await application.bot.set_my_commands(commands)
+
     # Build application
-    application = ApplicationBuilder().token(token).build()
+    application = ApplicationBuilder().token(token).post_init(post_init).build()
 
     # Register handlers
     application.add_handler(CommandHandler("start", start_command))
