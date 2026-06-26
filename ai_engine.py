@@ -19,7 +19,7 @@ load_dotenv()
 api_key = os.getenv("GEMINI_API_KEY")
 client = None
 if api_key:
-    client = genai.Client(vertexai=True, api_key=api_key)
+    client = genai.Client(api_key=api_key)
 
 # Model name
 MODEL_NAME = "gemini-3-flash-preview"
