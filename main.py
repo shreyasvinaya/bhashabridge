@@ -281,6 +281,54 @@ async def settone_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text(f"✅ Default tone set to: {tone}")
 
 
+async def explain_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /explain command.
+
+    Works in three ways:
+    1. Reply to a message with /explain -> explains that tagged message.
+    2. /explain <text> -> explains the provided text.
+    3. /explain (no reply, no text) -> explains the last 10 messages.
+    """
+    if not update.message or not update.effective_chat:
+        return
+
+    chat_id = update.effective_chat.id
+
+    # 1. Tagged/replied message takes priority
+    replied = update.message.reply_to_message
+    target_text = ""
+    if replied and replied.text:
+        target_text = replied.text
+    elif context.args:
+        # 2. Text provided after the command
+        target_text = " ".join(context.args)
+
+    if target_text:
+        recent_history = memory.get_history_text(chat_id, n=10)
+        analysis = await asyncio.to_thread(
+            ai_engine.analyze_message, recent_history, "", target_text
+        )
+        explanation = _format_explanation_from_analysis(analysis)
+        await update.message.reply_text(explanation, parse_mode="Markdown")
+        return
+
+    # 3. Nothing tagged or typed -> explain the last 10 messages
+    recent = memory.get_recent_messages(chat_id, n=10)
+    if not recent:
+        await update.message.reply_text(
+            "No recent messages to explain. Reply to a message with /explain, "
+            "or type /explain <message>."
+        )
+        return
+
+    conversation_text = "\n".join(f"{m['user']}: {m['text']}" for m in recent)
+    analysis = await asyncio.to_thread(
+        ai_engine.analyze_message, conversation_text, "", conversation_text
+    )
+    explanation = _format_explanation_from_analysis(analysis)
+    await update.message.reply_text(explanation, parse_mode="Markdown")
+
+
 async def text_listener(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Listen to and store group messages.
 
@@ -471,21 +519,18 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
         analysis = await asyncio.to_thread(
             ai_engine.analyze_message, conversation_text, "", conversation_text
         )
-        explanation = _format_explanation_from_analysis(analysis)
 
-        # Show the decoded explanation in the dropdown (private to user).
-        # Tapping sends only a minimal note, not the full explanation.
-        translation = analysis.get("translation", "")
-        vibe = analysis.get("vibe", "")
-        tone = analysis.get("tone", "")
-        slang = analysis.get("slang", {})
-        slang_str = ", ".join(f"{k}={v}" for k, v in slang.items()) if slang else "none"
+        # One-line private summary shown in the dropdown. Tapping sends nothing
+        # to the chat, so the group never sees it.
+        translation = (analysis.get("translation") or "").strip()
+        vibe = (analysis.get("vibe") or "").strip()
+        one_liner = " — ".join(p for p in (translation, vibe) if p) or "Nothing to explain."
 
         results = [
             InlineQueryResultArticle(
                 id=str(uuid.uuid4()),
-                title="📋 Last 10 messages explained (tap to dismiss)",
-                description=f"🎭 {vibe[:80]} | 🎵 {tone} | Slang: {slang_str[:50]}",
+                title="📋 Last 10 messages explained",
+                description=one_liner[:200],
                 input_message_content=InputTextMessageContent("🌉"),
             )
         ]
@@ -503,9 +548,8 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
     analysis = await asyncio.to_thread(
         ai_engine.analyze_message, recent_history, long_term_context, text
     )
-    explanation = _format_explanation_from_analysis(analysis)
 
-    # Show explanation privately in the dropdown — tapping does NOT send the explanation.
+    # Show explanation privately in the dropdown — tapping does NOT send anything.
     if analysis.get("is_english") is True:
         results = [
             InlineQueryResultArticle(
@@ -522,22 +566,20 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
                 chat_id,
                 "User",
                 text,
-                explanation[:200],
+                (analysis.get("translation") or "")[:200],
                 analysis.get("detected_language", "Unknown"),
             )
 
-        # Show full explanation in description (user reads it inline, privately)
-        translation = analysis.get("translation", "")
-        vibe = analysis.get("vibe", "")
-        tone = analysis.get("tone", "")
-        slang = analysis.get("slang", {})
-        slang_str = ", ".join(f"{k}={v}" for k, v in slang.items()) if slang else "none"
+        # One-line private summary shown in the dropdown.
+        translation = (analysis.get("translation") or "").strip()
+        vibe = (analysis.get("vibe") or "").strip()
+        one_liner = " — ".join(p for p in (translation, vibe) if p) or "Nothing to explain."
 
         results = [
             InlineQueryResultArticle(
                 id=str(uuid.uuid4()),
                 title=f"🗣️ {translation[:60]}",
-                description=f"🎭 {vibe[:80]} | 🎵 {tone} | Slang: {slang_str[:50]}",
+                description=one_liner[:200],
                 input_message_content=InputTextMessageContent("🌉"),
             )
         ]
@@ -753,6 +795,7 @@ def main() -> None:
         """Register bot commands with Telegram so they appear in the command menu."""
         commands = [
             BotCommand("start", "Show welcome message and usage instructions"),
+            BotCommand("explain", "Reply to a message with /explain to decode it"),
             BotCommand("setlang", "Set preferred language (english/hindi/kannada)"),
             BotCommand("settone", "Set default reply tone (casual/formal/...)"),
             BotCommand("clear", "Clear all memory and preferences"),
@@ -764,6 +807,7 @@ def main() -> None:
 
     # Register handlers
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("explain", explain_command))
     application.add_handler(CommandHandler("clear", clear_command))
     application.add_handler(CommandHandler("setlang", setlang_command))
     application.add_handler(CommandHandler("settone", settone_command))
