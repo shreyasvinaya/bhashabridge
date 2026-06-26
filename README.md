@@ -60,11 +60,11 @@ Using **Google's Gemini 3.0 Flash**, it analyzes live conversations to provide:
 
 ## 🛠️ Tech Stack
 
--   **LLM**: **Google Gemini 3.0 Flash** (via `google-genai` SDK) for lightning-fast token generation and nuanced cultural understanding.
+-   **LLM**: Provider-agnostic via **[LiteLLM](https://github.com/BerriAI/litellm)** — pick any model (Groq, OpenAI, Gemini, …) with the `LLM_MODEL` env var. Defaults to **Llama 3.3 70B on Groq**.
 -   **Platform**: **Telegram Bot API** (Python) utilizing `InlineQueryResultArticle` for private interaction.
 -   **Memory**: 
     -   *Short-term*: In-memory sliding window deque.
-    -   *Long-term*: JSON-based persistent storage with **Smart Retrieval** (Keyterm match + Recency scoring) to feed relevant context to Gemini.
+    -   *Long-term*: JSON-based persistent storage with **Smart Retrieval** (Keyterm match + Recency scoring) to feed relevant context to the LLM.
 -   **Language**: Python 3.10+
 
 ---
@@ -75,7 +75,7 @@ Using **Google's Gemini 3.0 Flash**, it analyzes live conversations to provide:
 1.  **Telegram Bot Token**: Get one from [@BotFather](https://t.me/BotFather).
     -   Enable Inline Mode: `/setinline` -> `Type to explain...`
     -   Disable Privacy: `/setprivacy` -> `Disable` (allows bot to read group context if added).
-2.  **Gemini API Key**: Get one from [Google AI Studio](https://aistudio.google.com/).
+2.  **LLM Provider API Key**: For the default, a **Groq** key from [Groq Console](https://console.groq.com/keys). To use another provider, set `LLM_MODEL` and that provider's key instead (e.g. `OPENAI_API_KEY`, `GEMINI_API_KEY`).
 
 ### 2. Installation
 ```bash
@@ -92,10 +92,15 @@ pip install -r requirements.txt
 ```
 
 ### 3. Configuration
-Create a `.env` file:
+Create a `.env` file (see `.env.example`):
 ```env
 TELEGRAM_TOKEN=your_telegram_bot_token
-GEMINI_API_KEY=your_gemini_api_key
+
+# Pick any provider/model; LiteLLM reads the matching key below.
+LLM_MODEL=groq/llama-3.3-70b-versatile
+GROQ_API_KEY=your_groq_api_key
+# OPENAI_API_KEY=your_openai_api_key      # for LLM_MODEL=openai/gpt-4o-mini
+# GEMINI_API_KEY=your_gemini_api_key      # for LLM_MODEL=gemini/gemini-2.5-flash
 ```
 
 ### 4. Run to Bridge
