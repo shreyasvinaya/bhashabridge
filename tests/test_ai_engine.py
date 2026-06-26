@@ -60,15 +60,11 @@ class TestAnalyzeMessage:
         assert result["detected_language"] == "English"
 
     def test_fallback_on_error(self, monkeypatch):
-        """Test fallback when API fails."""
-        # Temporarily break the API client
-        original_client = ai_engine.client
-        ai_engine.client = None
+        """Test fallback when no LLM provider is configured."""
+        # Simulate missing provider credentials
+        monkeypatch.setattr(ai_engine, "LLM_AVAILABLE", False)
 
         result = ai_engine.analyze_message("", "", "test message")
-
-        # Restore client
-        ai_engine.client = original_client
 
         # Should return fallback structure
         assert result["is_english"] is True

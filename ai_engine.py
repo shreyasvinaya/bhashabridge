@@ -2,27 +2,39 @@
 
 This module provides all LLM integrations including message analysis,
 explanation, translation, reply generation, and conversation summarization.
-Uses Groq API with Llama 3.3 70B (128K context window).
+
+Uses LiteLLM so the provider/model is selectable via the ``LLM_MODEL`` env var
+without code changes, e.g.::
+
+    LLM_MODEL=groq/llama-3.3-70b-versatile     # default
+    LLM_MODEL=openai/gpt-4o-mini
+    LLM_MODEL=gemini/gemini-2.5-flash
+
+LiteLLM reads the matching provider key from the environment automatically
+(``GROQ_API_KEY``, ``OPENAI_API_KEY``, ``GEMINI_API_KEY``, ...).
 """
 
 import json
 import os
 import time
 
+import litellm
 from dotenv import load_dotenv
-from groq import Groq
 
 # Load environment variables
 load_dotenv()
 
-# Configure Groq API client
-api_key = os.getenv("GROQ_API_KEY")
-client = None
-if api_key:
-    client = Groq(api_key=api_key)
+# Let LiteLLM silently drop params a given provider doesn't support, so the same
+# call works across providers (e.g. temperature/max_tokens quirks).
+litellm.drop_params = True
 
-# Model name — Llama 3.3 70B on Groq (128K context, free tier available)
-MODEL_NAME = "llama-3.3-70b-versatile"
+# Provider-prefixed model. Override with LLM_MODEL to switch providers.
+# Default: Llama 3.3 70B on Groq (128K context, free tier available).
+MODEL_NAME = os.getenv("LLM_MODEL", "groq/llama-3.3-70b-versatile")
+
+# LiteLLM has no persistent client object; instead we check that the API key for
+# the selected model's provider is present in the environment.
+LLM_AVAILABLE = litellm.validate_environment(MODEL_NAME).get("keys_in_environment", False)
 
 # In-memory cache for repeated inline requests (same user query often sent multiple times)
 ANALYSIS_CACHE_TTL_SECONDS = 45
@@ -44,7 +56,7 @@ Consider chat history and past context for accurate interpretation."""
 
 
 def _call_llm(prompt: str, max_tokens: int = 700) -> str:
-    """Make a single LLM call via Groq API.
+    """Make a single LLM call via LiteLLM using the configured ``MODEL_NAME``.
 
     Args:
         prompt: The user prompt to send.
@@ -54,12 +66,12 @@ def _call_llm(prompt: str, max_tokens: int = 700) -> str:
         The raw response text.
 
     Raises:
-        RuntimeError: If the API client is not configured.
+        RuntimeError: If no provider credentials are configured for ``MODEL_NAME``.
     """
-    if client is None:
-        raise RuntimeError("Groq API key not configured")
+    if not LLM_AVAILABLE:
+        raise RuntimeError(f"No API key configured for model '{MODEL_NAME}'")
 
-    response = client.chat.completions.create(
+    response = litellm.completion(
         model=MODEL_NAME,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -68,14 +80,14 @@ def _call_llm(prompt: str, max_tokens: int = 700) -> str:
         max_tokens=max_tokens,
         temperature=0.7,
     )
-    return response.choices[0].message.content
+    return response.choices[0].message.content or ""
 
 
 def _clean_json_response(text: str) -> str:
     """Clean JSON response by removing markdown code fences.
 
     Args:
-        text: Raw response text from Gemini.
+        text: Raw response text from the LLM.
 
     Returns:
         Cleaned text without markdown fences.
@@ -106,7 +118,7 @@ def analyze_message(
     long_term_context: str,
     target_message: str,
 ) -> dict:
-    """Perform comprehensive analysis of a message using a single Gemini call.
+    """Perform comprehensive analysis of a message using a single LLM call.
 
     This is the preferred entry point for inline queries as it avoids multiple
     sequential API calls by returning all needed data in one response.
@@ -132,7 +144,7 @@ def analyze_message(
         >>> result["detected_language"]
         'Kanglish'
     """
-    if client is None:
+    if not LLM_AVAILABLE:
         return {
             "is_english": True,
             "detected_language": "English",
@@ -254,8 +266,8 @@ def explain_message(
         >>> "Translation" in explain
         True
     """
-    if client is None:
-        return "⚠️ Groq API key not configured. Please set GROQ_API_KEY in .env"
+    if not LLM_AVAILABLE:
+        return "⚠️ LLM not configured. Set the API key for your LLM_MODEL provider in .env"
 
     try:
         prompt = f"""{long_term_context}
@@ -302,8 +314,8 @@ def explain_with_translate(
         >>> len(explain) > 0
         True
     """
-    if client is None:
-        return "⚠️ Groq API key not configured. Please set GROQ_API_KEY in .env"
+    if not LLM_AVAILABLE:
+        return "⚠️ LLM not configured. Set the API key for your LLM_MODEL provider in .env"
 
     try:
         prompt = f"""{long_term_context}
@@ -354,8 +366,8 @@ def generate_reply(
         >>> len(reply) > 0
         True
     """
-    if client is None:
-        return "⚠️ Groq API key not configured. Please set GROQ_API_KEY in .env"
+    if not LLM_AVAILABLE:
+        return "⚠️ LLM not configured. Set the API key for your LLM_MODEL provider in .env"
 
     try:
         prompt = f"""{long_term_context}
@@ -394,8 +406,8 @@ def translate_message(text: str, target_language: str) -> str:
         >>> translate_message("Hello, how are you?", "hindi")
         '...'
     """
-    if client is None:
-        return "⚠️ Groq API key not configured. Please set GROQ_API_KEY in .env"
+    if not LLM_AVAILABLE:
+        return "⚠️ LLM not configured. Set the API key for your LLM_MODEL provider in .env"
 
     try:
         prompt = f"""[TEXT TO TRANSLATE]
@@ -424,8 +436,8 @@ def summarize_chat_context(messages_text: str) -> str:
     Returns:
         A 4-5 line Markdown-formatted summary of the conversation.
     """
-    if client is None:
-        return "⚠️ Groq API key not configured. Please set GROQ_API_KEY in .env"
+    if not LLM_AVAILABLE:
+        return "⚠️ LLM not configured. Set the API key for your LLM_MODEL provider in .env"
 
     try:
         prompt = f"""[CONVERSATION]
@@ -464,7 +476,7 @@ def summarize_conversation(messages_text: str) -> dict:
         >>> "summary" in result
         True
     """
-    if client is None:
+    if not LLM_AVAILABLE:
         return {
             "summary": "API not configured",
             "key_terms": [],
@@ -513,7 +525,7 @@ def detect_tone(recent_history: str, target_message: str) -> str:
         >>> tone.lower() in ["casual", "sarcastic", "playful"]
         True
     """
-    if client is None:
+    if not LLM_AVAILABLE:
         return "casual"
 
     try:
@@ -527,14 +539,7 @@ TASK: Detect the tone/mood of the target message given the conversation context.
 Respond with ONLY a single word or short phrase describing the tone.
 Examples: casual, sarcastic, formal, angry, playful, affectionate, frustrated, humorous, urgent"""
 
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-            ),
-        )
-        return response.text.strip().lower()
+        return _call_llm(prompt, max_tokens=50).strip().lower()
 
     except Exception:
         return "casual"
