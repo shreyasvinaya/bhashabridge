@@ -448,10 +448,8 @@ async def inline_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def _handle_explain(update: Update, chat_id: int | None, text: str) -> None:
     """Handle 'explain' inline command."""
-    user_provided_text = bool(text)  # True if user typed explicit text after 'explain'
-
     if not text:
-        # No text provided — summarize the last 10 messages
+        # No message tagged — explain (decode) the last 10 messages
         recent = memory.get_recent_messages(chat_id, n=10) if chat_id else []
         if not recent:
             results = [
@@ -467,23 +465,33 @@ async def _handle_explain(update: Update, chat_id: int | None, text: str) -> Non
             await update.inline_query.answer(results, cache_time=0, is_personal=True)
             return
 
-        # Build conversation text from last 10 messages
+        # Build conversation text from last 10 messages and decode it
         conversation_text = "\n".join(f"{m['user']}: {m['text']}" for m in recent)
 
-        # Get a concise summary
-        summary = await asyncio.to_thread(ai_engine.summarize_chat_context, conversation_text)
+        analysis = await asyncio.to_thread(
+            ai_engine.analyze_message, conversation_text, "", conversation_text
+        )
+        explanation = _format_explanation_from_analysis(analysis)
 
-        # Show summary in the dropdown (private to user).
-        # Tapping sends only a minimal note, not the full summary.
+        # Show the decoded explanation in the dropdown (private to user).
+        # Tapping sends only a minimal note, not the full explanation.
+        translation = analysis.get("translation", "")
+        vibe = analysis.get("vibe", "")
+        tone = analysis.get("tone", "")
+        slang = analysis.get("slang", {})
+        slang_str = ", ".join(f"{k}={v}" for k, v in slang.items()) if slang else "none"
+
         results = [
             InlineQueryResultArticle(
                 id=str(uuid.uuid4()),
-                title="📋 Conversation Summary (tap to dismiss)",
-                description=summary[:200],
+                title="📋 Last 10 messages explained (tap to dismiss)",
+                description=f"🎭 {vibe[:80]} | 🎵 {tone} | Slang: {slang_str[:50]}",
                 input_message_content=InputTextMessageContent("🌉"),
             )
         ]
         await update.inline_query.answer(results, cache_time=0, is_personal=True)
+        return
+
         return
 
     # User provided explicit text — explain that specific message
