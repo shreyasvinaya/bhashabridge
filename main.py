@@ -302,6 +302,62 @@ async def text_listener(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await maybe_summarize(chat_id)
 
 
+# Inline command menu shown when the query is empty or partially typed
+INLINE_COMMAND_OPTIONS = [
+    (
+        "explain",
+        "🗣️ Explain a message",
+        "explain <message> — decode slang, vibe & meaning",
+        "Type: explain <message>\nExample: explain macha don't put scene",
+    ),
+    (
+        "explaintranslate",
+        "🌐 Explain + translate",
+        "explaintranslate <hindi|kannada> <message>",
+        "Type: explaintranslate hindi <message>",
+    ),
+    (
+        "reply",
+        "⚡ Suggest a reply",
+        "reply [tone] [language] — auto-reply to recent chat",
+        "Type: reply  (or: reply formal hindi)",
+    ),
+    (
+        "translate",
+        "🔤 Translate a message",
+        "translate <hindi|kannada|english> <message>",
+        "Type: translate hindi <message>",
+    ),
+]
+
+
+def _build_command_menu(prefix: str = "") -> list[InlineQueryResultArticle]:
+    """Build inline result articles listing available commands.
+
+    Args:
+        prefix: Optional partial command to filter the menu (e.g. 'exp').
+
+    Returns:
+        List of InlineQueryResultArticle options for the user to pick from.
+    """
+    prefix = prefix.lower()
+    results = []
+    for command, title, description, help_text in INLINE_COMMAND_OPTIONS:
+        if prefix and not command.startswith(prefix):
+            continue
+        results.append(
+            InlineQueryResultArticle(
+                id=str(uuid.uuid4()),
+                title=title,
+                description=description,
+                input_message_content=InputTextMessageContent(
+                    f"ℹ️ BhashaBridge usage:\n{help_text}"
+                ),
+            )
+        )
+    return results
+
+
 async def inline_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle inline queries.
 
@@ -311,8 +367,8 @@ async def inline_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = update.effective_user.id
 
     if not query:
-        # Empty query - could show help or recent queries
-        await update.inline_query.answer([], cache_time=0)
+        # Empty query - show the available command options
+        await update.inline_query.answer(_build_command_menu(), cache_time=0, is_personal=True)
         return
 
     # Get user's chat context
@@ -327,15 +383,18 @@ async def inline_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Parse query into command and arguments
     parts = query.split(maxsplit=1)
     if not parts:
-        await update.inline_query.answer([], cache_time=0)
+        await update.inline_query.answer(_build_command_menu(), cache_time=0, is_personal=True)
         return
 
     command = parts[0].lower()
 
     # Strict command check
     if command not in valid_commands:
-        # Ignore invalid/partial commands
-        await update.inline_query.answer([], cache_time=0)
+        # Show matching command options for partial/invalid commands.
+        # Only filter by prefix when the user hasn't started typing args yet.
+        prefix = command if len(parts) == 1 else ""
+        menu = _build_command_menu(prefix)
+        await update.inline_query.answer(menu, cache_time=0, is_personal=True)
         return
 
     args = parts[1] if len(parts) > 1 else ""
